@@ -1,0 +1,617 @@
+# Kubernetes集群安装指南
+
+## 目录
+- [1. 系统要求](#1-系统要求)
+- [2. 准备工作](#2-准备工作)
+- [3. 安装步骤](#3-安装步骤)
+- [4. 安全配置](#4-安全配置)
+- [5. 集群验证](#5-集群验证)
+- [6. 故障排查](#6-故障排查)
+- [7. 维护指南](#7-维护指南)
+
+## 1. 系统要求
+
+### 1.1 硬件配置要求
+
+#### Master节点最低配置
+- CPU: 2核心(推荐4核心)
+- 内存: 4GB(推荐8GB)
+- 硬盘: 50GB(推荐100GB SSD)
+- 网卡: 千兆网卡
+
+#### Worker节点最低配置
+- CPU: 2核心
+- 内存: 2GB(根据工作负载调整)
+- 硬盘: 50GB
+- 网卡: 千兆网卡
+
+### 1.2 操作系统要求
+
+支持的Linux发行版：
+- Ubuntu 20.04/22.04 LTS
+- CentOS 7/8
+- Rocky Linux 8/9
+- Red Hat Enterprise Linux 7/8/9
+
+系统配置要求：
+- 系统盘剩余空间 > 50GB
+- 禁用SELinux
+- 禁用Swap
+- 加载必要的内核模块
+- 设置正确的内核参数
+
+### 1.3 网络要求
+
+#### 网络配置
+- 所有节点之间网络互通
+- 每个节点有固定的内网IP地址
+- 能够访问外网(用于下载软件包)
+- 支持的网络插件：Calico、Flannel等
+- Pod网络CIDR规划(默认: 10.244.0.0/16)
+- Service网络CIDR规划(默认: 10.96.0.0/12)
+
+#### 必需开放的端口
+Master节点：
+```
+TCP 6443        - Kubernetes API Server
+TCP 2379-2380   - etcd server client API
+TCP 10250       - Kubelet API
+TCP 10251       - kube-scheduler
+TCP 10252       - kube-controller-manager
+```
+
+Worker节点：
+```
+TCP 10250       - Kubelet API
+TCP 30000-32767 - NodePort Services默认端口范围
+```
+
+## 2. 准备工作
+
+### 2.1 系统配置
+
+在所有节点执行以下操作：
+
+#### 2.1.1 主机名配置
+```bash
+# Master节点
+hostnamectl set-hostname k8s-master
+
+# Worker节点
+hostnamectl set-hostname k8s-worker1  # 第一个worker节点
+hostnamectl set-hostname k8s-worker2  # 第二个worker节点
+```
+
+#### 2.1.2 hosts文件配置
+```bash
+cat >> /etc/hosts << EOF
+192.168.1.10 k8s-master
+192.168.1.11 k8s-worker1
+192.168.1.12 k8s-worker2
+EOF
+```
+
+#### 2.1.3 禁用SELinux(CentOS/Rocky Linux)
+```bash
+setenforce 0
+sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config
+```
+
+#### 2.1.4 禁用Swap
+```bash
+# 临时禁用
+swapoff -a
+
+# 永久禁用
+sed -i '/swap/d' /etc/fstab
+```
+
+#### 2.1.5 加载内核模块
+```bash
+cat > /etc/modules-load.d/k8s.conf << EOF
+overlay
+br_netfilter
+EOF
+
+modprobe overlay
+modprobe br_netfilter
+```
+
+#### 2.1.6 设置内核参数
+```bash
+cat > /etc/sysctl.d/k8s.conf << EOF
+net.bridge.bridge-nf-call-iptables  = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward                 = 1
+vm.swappiness                       = 0
+vm.overcommit_memory               = 1
+vm.panic_on_oom                    = 0
+fs.inotify.max_user_watches        = 89100
+fs.file-max                        = 52706963
+fs.nr_open                         = 52706963
+net.ipv4.tcp_keepalive_time       = 600
+net.ipv4.tcp_keepalive_intvl      = 30
+net.ipv4.tcp_keepalive_probes     = 10
+EOF
+
+sysctl --system
+```
+
+#### 2.1.7 配置时间同步
+```bash
+# 安装chrony
+apt-get update && apt-get install -y chrony  # Ubuntu
+# 或
+yum install -y chrony  # CentOS/Rocky Linux
+
+# 配置时间服务器
+cat > /etc/chrony.conf << EOF
+pool ntp.aliyun.com iburst
+driftfile /var/lib/chrony/drift
+makestep 1.0 3
+rtcsync
+allow 192.168.0.0/16
+local stratum 10
+EOF
+
+# 启动服务
+systemctl enable chronyd
+systemctl restart chronyd
+
+# 验证同步状态
+chronyc sources -v
+```
+
+### 2.2 安装容器运行时
+
+我们使用containerd作为容器运行时：
+
+```bash
+# 安装依赖包
+apt-get update && apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+
+# 添加Docker官方GPG密钥
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# 添加Docker软件源
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# 安装containerd
+apt-get update && apt-get install -y containerd.io
+
+# 创建默认配置文件
+mkdir -p /etc/containerd
+containerd config default > /etc/containerd/config.toml
+
+# 修改配置使用systemd cgroup驱动
+sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
+
+# 重启containerd
+systemctl restart containerd
+systemctl enable containerd
+```
+
+### 2.3 安装kubeadm、kubelet和kubectl
+
+在所有节点上执行：
+
+```bash
+# 添加Kubernetes软件源
+curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /etc/apt/keyrings/kubernetes-archive-keyring.gpg
+
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main" | tee /etc/apt/sources.list.d/kubernetes.list
+
+# 安装指定版本的kubeadm、kubelet和kubectl
+apt-get update
+apt-get install -y kubelet=1.24.0-00 kubeadm=1.24.0-00 kubectl=1.24.0-00
+
+# 锁定版本
+apt-mark hold kubelet kubeadm kubectl
+```
+
+## 3. 安装步骤
+
+### 3.1 初始化Master节点
+
+#### 3.1.1 创建kubeadm配置文件
+```bash
+cat > kubeadm-config.yaml << EOF
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: 192.168.1.10  # Master节点IP
+  bindPort: 6443
+nodeRegistration:
+  criSocket: unix:///run/containerd/containerd.sock
+---
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: ClusterConfiguration
+kubernetesVersion: v1.24.0
+networking:
+  serviceSubnet: "10.96.0.0/12"
+  podSubnet: "10.244.0.0/16"
+  dnsDomain: "cluster.local"
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+EOF
+```
+
+#### 3.1.2 执行初始化
+```bash
+kubeadm init --config=kubeadm-config.yaml --upload-certs | tee kubeadm-init.log
+```
+
+#### 3.1.3 配置kubectl
+```bash
+mkdir -p $HOME/.kube
+cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+chown $(id -u):$(id -g) $HOME/.kube/config
+```
+
+#### 3.1.4 安装网络插件(Calico)
+```bash
+kubectl apply -f https://docs.projectcalico.org/v3.24/manifests/calico.yaml
+```
+
+### 3.2 加入Worker节点
+
+在worker节点上执行kubeadm join命令(从master节点的初始化日志中获取)：
+
+```bash
+kubeadm join 192.168.1.10:6443 --token <token> \
+    --discovery-token-ca-cert-hash sha256:<hash>
+```
+
+如果token过期，可以在master节点上创建新的：
+```bash
+kubeadm token create --print-join-command
+```
+
+## 4. 安全配置
+
+### 4.1 证书管理
+
+#### 4.1.1 查看证书有效期
+```bash
+kubeadm certs check-expiration
+```
+
+#### 4.1.2 证书续期
+```bash
+kubeadm certs renew all
+```
+
+#### 4.1.3 备份证书
+```bash
+cp -r /etc/kubernetes/pki /etc/kubernetes/pki-backup-$(date +%Y%m%d)
+```
+
+### 4.2 RBAC配置
+
+#### 4.2.1 创建服务账号
+```bash
+cat > service-account.yaml << EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: my-service-account
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: my-role
+  namespace: default
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: my-role-binding
+  namespace: default
+subjects:
+- kind: ServiceAccount
+  name: my-service-account
+  namespace: default
+roleRef:
+  kind: Role
+  name: my-role
+  apiGroup: rbac.authorization.k8s.io
+EOF
+
+kubectl apply -f service-account.yaml
+```
+
+### 4.3 网络安全策略
+
+#### 4.3.1 配置NetworkPolicy
+```bash
+cat > network-policy.yaml << EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: default
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+EOF
+
+kubectl apply -f network-policy.yaml
+```
+
+### 4.4 Secret加密配置
+
+#### 4.4.1 配置加密密钥
+```bash
+cat > encryption-config.yaml << EOF
+apiVersion: apiserver.config.k8s.io/v1
+kind: EncryptionConfiguration
+resources:
+  - resources:
+    - secrets
+    providers:
+    - aescbc:
+        keys:
+        - name: key1
+          secret: $(head -c 32 /dev/urandom | base64)
+    - identity: {}
+EOF
+```
+
+## 5. 集群验证
+
+### 5.1 检查节点状态
+```bash
+kubectl get nodes
+```
+
+### 5.2 检查系统组件状态
+```bash
+kubectl get pods -n kube-system
+```
+
+### 5.3 部署测试应用
+```bash
+kubectl create deployment nginx --image=nginx
+kubectl expose deployment nginx --port=80 --type=NodePort
+```
+
+### 5.4 验证DNS服务
+```bash
+kubectl run test-dns --image=busybox:1.28 -- sleep 3600
+kubectl exec -it test-dns -- nslookup kubernetes.default
+```
+
+## 6. 故障排查
+
+### 6.1 常见问题检查
+
+#### 6.1.1 检查节点状态
+```bash
+kubectl describe node <node-name>
+```
+
+#### 6.1.2 检查Pod状态
+```bash
+kubectl describe pod <pod-name> -n <namespace>
+```
+
+#### 6.1.3 查看系统日志
+```bash
+# 查看kubelet日志
+journalctl -xeu kubelet
+
+# 查看容器运行时日志
+journalctl -xeu containerd
+
+# 查看API Server日志
+kubectl logs -n kube-system kube-apiserver-<master-node-name>
+```
+
+### 6.2 常见问题解决方案
+
+#### 6.2.1 节点NotReady
+1. 检查kubelet状态
+```bash
+systemctl status kubelet
+```
+
+2. 检查网络插件状态
+```bash
+kubectl get pods -n kube-system | grep calico
+```
+
+#### 6.2.2 Pod一直处于Pending状态
+1. 检查资源是否足够
+```bash
+kubectl describe pod <pod-name>
+```
+
+2. 检查调度器日志
+```bash
+kubectl logs -n kube-system kube-scheduler-<master-node-name>
+```
+
+## 7. 维护指南
+
+### 7.1 集群升级
+
+#### 7.1.1 升级kubeadm
+```bash
+apt-mark unhold kubeadm
+apt-get update && apt-get install -y kubeadm=1.24.x-00
+apt-mark hold kubeadm
+```
+
+#### 7.1.2 升级master节点
+```bash
+kubeadm upgrade plan
+kubeadm upgrade apply v1.24.x
+```
+
+#### 7.1.3 升级worker节点
+```bash
+# 驱逐节点上的Pod
+kubectl drain <node-name> --ignore-daemonsets
+
+# 升级kubelet和kubectl
+apt-mark unhold kubelet kubectl
+apt-get update && apt-get install -y kubelet=1.24.x-00 kubectl=1.24.x-00
+apt-mark hold kubelet kubectl
+
+# 重启kubelet
+systemctl daemon-reload
+systemctl restart kubelet
+
+# 恢复节点调度
+kubectl uncordon <node-name>
+```
+
+### 7.2 备份和恢复
+
+#### 7.2.1 使用etcdctl备份
+```bash
+ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379 \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/etcd/server.crt \
+  --key=/etc/kubernetes/pki/etcd/server.key \
+  snapshot save /backup/etcd-snapshot-$(date +%Y%m%d).db
+```
+
+#### 7.2.2 恢复etcd备份
+```bash
+ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379 \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/etcd/server.crt \
+  --key=/etc/kubernetes/pki/etcd/server.key \
+  snapshot restore /backup/etcd-snapshot.db
+```
+
+### 7.3 监控配置
+
+#### 7.3.1 部署Prometheus
+```bash
+# 添加Helm仓库
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+# 安装Prometheus Stack
+helm install prometheus prometheus-community/kube-prometheus-stack
+```
+
+#### 7.3.2 配置告警规则
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kubernetes-alerts
+  namespace: monitoring
+spec:
+  groups:
+  - name: kubernetes
+    rules:
+    - alert: NodeNotReady
+      expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+      for: 10m
+      labels:
+        severity: critical
+      annotations:
+        description: "Node {{ $labels.node }} has been unready for more than 10 minutes."
+```
+
+### 7.4 日志收集
+
+#### 7.4.1 部署EFK Stack
+```bash
+# 创建命名空间
+kubectl create namespace logging
+
+# 部署Elasticsearch
+kubectl apply -f elasticsearch.yaml
+
+# 部署Fluentd
+kubectl apply -f fluentd-daemonset.yaml
+
+# 部署Kibana
+kubectl apply -f kibana.yaml
+```
+
+## 附录
+
+### A. 重要配置文件位置
+- `/etc/kubernetes/`: Kubernetes配置文件目录
+- `/etc/kubernetes/manifests/`: 静态Pod清单目录
+- `/etc/kubernetes/pki/`: 证书和密钥目录
+- `/var/lib/kubelet/`: kubelet工作目录
+- `/var/log/containers/`: 容器日志目录
+- `/etc/containerd/`: containerd配置目录
+
+### B. 常用命令速查表
+```bash
+# 节点管理
+kubectl get nodes
+kubectl describe node <node-name>
+kubectl drain <node-name>
+kubectl cordon <node-name>
+kubectl uncordon <node-name>
+
+# Pod管理
+kubectl get pods --all-namespaces
+kubectl describe pod <pod-name>
+kubectl logs <pod-name>
+kubectl exec -it <pod-name> -- /bin/bash
+
+# 服务管理
+kubectl get services
+kubectl describe service <service-name>
+
+# 配置管理
+kubectl get configmaps
+kubectl get secrets
+
+# 存储管理
+kubectl get pv
+kubectl get pvc
+
+# 故障排查
+kubectl get events
+kubectl describe events
+```
+
+### C. 网络排查工具
+```bash
+# 安装网络工具
+apt-get update && apt-get install -y iputils-ping net-tools tcpdump
+
+# 检查DNS
+kubectl run test-dns --image=busybox:1.28 -- nslookup kubernetes.default
+
+# 检查网络连接
+kubectl run test-net --image=nicolaka/netshoot -- sleep 3600
+kubectl exec -it test-net -- bash
+```
+
+### D. 性能测试工具
+```bash
+# 安装性能测试工具
+apt-get update && apt-get install -y stress-ng sysbench
+
+# CPU压力测试
+stress-ng --cpu 4 --timeout 60s
+
+# 内存压力测试
+stress-ng --vm 2 --vm-bytes 1G --timeout 60s
+
+# 磁盘I/O测试
+sysbench --test=fileio --file-total-size=3G prepare
+sysbench --test=fileio --file-total-size=3G --file-test-mode=rndrw run
+sysbench --test=fileio --file-total-size=3G cleanup
+```

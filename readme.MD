@@ -26,3 +26,14 @@
 
 1. [istio-setup.md](4.istio-setup.md)
 2. [understand-istio.md](5.undestand-istio.md)
+
+
+## server info
+
+
+182.42.80.121   10.0.1.149(内)
+
+182.42.82.135   10.0.3.231(内)
+
+182.42.95.71    10.0.0.32(内)
+
