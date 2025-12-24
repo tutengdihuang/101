@@ -1,0 +1,6 @@
+Name: product.rpc
+ListenOn: 0.0.0.0:9002
+Etcd:
+  Hosts:
+    - etcd-service:2379
+  Key: product.rpc

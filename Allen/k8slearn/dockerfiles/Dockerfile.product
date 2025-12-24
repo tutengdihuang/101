@@ -1,0 +1,29 @@
+FROM golang:1.24-alpine AS builder
+
+WORKDIR /build
+
+RUN apk add --no-cache git make ca-certificates tzdata
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+WORKDIR /build/rpc/product
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags '-extldflags "-static"' -o product .
+
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates tzdata
+ENV TZ=Asia/Shanghai
+
+WORKDIR /app
+
+COPY --from=builder /build/rpc/product/product .
+COPY --from=builder /build/rpc/product/etc ./etc
+
+EXPOSE 9002
+
+ENTRYPOINT ["./product"]
+CMD ["-f", "etc/product.yaml"]
+

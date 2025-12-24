@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-service
+  namespace: service-test
+  labels:
+    app: web-service
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-service
+  template:
+    metadata:
+      labels:
+        app: web-service
+        version: v1
+    spec:
+      containers:
+      - name: web
+        image: ghcr.io/tutengdihuang/service-test/web-service:latest  # 会被 CI/CD 替换
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8888
+          name: http
+          protocol: TCP
+        volumeMounts:
+        - name: config
+          mountPath: /app/etc
+          readOnly: true
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8888
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8888
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      volumes:
+      - name: config
+        configMap:
+          name: web-service-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-service
+  namespace: service-test
+  labels:
+    app: web-service
+spec:
+  type: NodePort
+  ports:
+  - port: 8888
+    targetPort: 8888
+    protocol: TCP
+    name: http
+    nodePort: 30888
+  selector:
+    app: web-service
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-ingress
+  namespace: service-test
+  annotations:
+    kubernetes.io/ingress.class: nginx
+spec:
+  rules:
+  - host: service-test.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: web-service
+            port:
+              number: 8888
+

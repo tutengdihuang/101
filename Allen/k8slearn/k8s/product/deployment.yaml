@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: product-service
+  namespace: service-test
+  labels:
+    app: product-service
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: product-service
+  template:
+    metadata:
+      labels:
+        app: product-service
+        version: v1
+    spec:
+      containers:
+      - name: product
+        image: ghcr.io/tutengdihuang/service-test/product-service:latest  # 会被 CI/CD 替换
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 9002
+          name: grpc
+          protocol: TCP
+        volumeMounts:
+        - name: config
+          mountPath: /app/etc
+          readOnly: true
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+        livenessProbe:
+          tcpSocket:
+            port: 9002
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          tcpSocket:
+            port: 9002
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      volumes:
+      - name: config
+        configMap:
+          name: product-service-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: product-service
+  namespace: service-test
+  labels:
+    app: product-service
+spec:
+  type: ClusterIP
+  ports:
+  - port: 9002
+    targetPort: 9002
+    protocol: TCP
+    name: grpc
+  selector:
+    app: product-service
+

@@ -1,0 +1,35 @@
+FROM golang:1.24-alpine AS builder
+
+WORKDIR /build
+
+# 安装构建依赖
+RUN apk add --no-cache git make ca-certificates tzdata
+
+# 复制依赖文件
+COPY go.mod go.sum ./
+RUN go mod download
+
+# 复制源代码
+COPY . .
+
+# 构建 web 服务
+WORKDIR /build/api/web
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags '-extldflags "-static"' -o web .
+
+# 运行阶段
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates tzdata
+ENV TZ=Asia/Shanghai
+
+WORKDIR /app
+
+# 复制二进制文件和配置文件
+COPY --from=builder /build/api/web/web .
+COPY --from=builder /build/api/web/etc ./etc
+
+EXPOSE 8888
+
+ENTRYPOINT ["./web"]
+CMD ["-f", "etc/web.yaml"]
+
