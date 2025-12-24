@@ -30,8 +30,8 @@ permissions:
   packages: write
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_PREFIX: ${{ github.repository_owner }}/service-test
+  REGISTRY: crpi-j9gshcbjtb1i6c7h.cn-hangzhou.personal.cr.aliyuncs.com
+  IMAGE_PREFIX: tutengdihuang
   KUBERNETES_NAMESPACE: service-test
   GO_VERSION: '1.24'
 
@@ -142,14 +142,76 @@ jobs:
           echo "构建产物大小:"
           ls -lh /tmp/web /tmp/user /tmp/product /tmp/trade 2>/dev/null | awk '{print "  " $9 " - " $5}'
 
+  # 检测变更的服务
+  detect-changes:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      web: ${{ steps.changes.outputs.web }}
+      user: ${{ steps.changes.outputs.user }}
+      product: ${{ steps.changes.outputs.product }}
+      trade: ${{ steps.changes.outputs.trade }}
+      common: ${{ steps.changes.outputs.common }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changes
+        id: changes
+        run: |
+          # 获取变更的文件列表
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            CHANGED_FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.sha }})
+          else
+            CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} 2>/dev/null || git diff --name-only HEAD~1 HEAD)
+          fi
+          
+          echo "变更的文件:"
+          echo "$CHANGED_FILES"
+          
+          # 检测公共文件变更（go.mod, go.sum, dockerfiles）
+          if echo "$CHANGED_FILES" | grep -qE "^(go\.mod|go\.sum|dockerfiles/)"; then
+            echo "common=true" >> $GITHUB_OUTPUT
+            echo "检测到公共文件变更，将构建所有服务"
+          else
+            echo "common=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # 检测各服务变更
+          if echo "$CHANGED_FILES" | grep -qE "^api/web/"; then
+            echo "web=true" >> $GITHUB_OUTPUT
+          else
+            echo "web=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if echo "$CHANGED_FILES" | grep -qE "^rpc/user/"; then
+            echo "user=true" >> $GITHUB_OUTPUT
+          else
+            echo "user=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if echo "$CHANGED_FILES" | grep -qE "^rpc/product/"; then
+            echo "product=true" >> $GITHUB_OUTPUT
+          else
+            echo "product=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if echo "$CHANGED_FILES" | grep -qE "^rpc/trade/"; then
+            echo "trade=true" >> $GITHUB_OUTPUT
+          else
+            echo "trade=false" >> $GITHUB_OUTPUT
+          fi
+
   # 构建 Docker 镜像
   build:
-    needs: test
+    needs: [test, detect-changes]
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: read
-      packages: write  # 需要写入权限来推送 Docker 镜像到 GitHub Container Registry
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -172,28 +234,61 @@ jobs:
             port: 9003
 
     steps:
+      - name: Check if build needed
+        id: check
+        run: |
+          SERVICE="${{ matrix.service.name }}"
+          COMMON="${{ needs.detect-changes.outputs.common }}"
+          
+          # 手动触发时检查选择的服务
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            if [ "${{ github.event.inputs.service }}" == "all" ] || [ "${{ github.event.inputs.service }}" == "$SERVICE" ]; then
+              echo "skip=false" >> $GITHUB_OUTPUT
+              echo "手动触发，构建 $SERVICE"
+            else
+              echo "skip=true" >> $GITHUB_OUTPUT
+              echo "手动触发，跳过 $SERVICE"
+            fi
+          # 公共文件变更时构建所有服务
+          elif [ "$COMMON" == "true" ]; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "公共文件变更，构建 $SERVICE"
+          # 检查具体服务是否有变更
+          elif [ "${{ needs.detect-changes.outputs[matrix.service.name] }}" == "true" ]; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "$SERVICE 有变更，需要构建"
+          else
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "$SERVICE 无变更，跳过构建"
+          fi
+
       - name: Checkout code
+        if: steps.check.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 获取完整的 git 历史
+          fetch-depth: 0
 
       - name: Verify code state
+        if: steps.check.outputs.skip != 'true'
         run: |
           echo "=== 验证代码状态 ==="
           echo "当前提交: $(git rev-parse HEAD)"
           echo "构建服务: ${{ matrix.service.name }}"
 
       - name: Set up Docker Buildx
+        if: steps.check.outputs.skip != 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to Container Registry
+        if: steps.check.outputs.skip != 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.ALIYUN_REGISTRY_USERNAME }}
+          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
 
       - name: Extract metadata
+        if: steps.check.outputs.skip != 'true'
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -203,10 +298,11 @@ jobs:
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix={{branch}}-
+            type=sha,prefix=
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
 
       - name: Build and push Docker image
+        if: steps.check.outputs.skip != 'true'
         id: build
         uses: docker/build-push-action@v5
         with:
@@ -217,16 +313,15 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service.name }}-service:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service.name }}-service:buildcache,mode=max
           platforms: linux/amd64
 
       - name: Image digest
+        if: steps.check.outputs.skip != 'true'
         run: echo "Image pushed with digest ${{ steps.build.outputs.digest }}"
 
   # 部署到 Kubernetes
   deploy:
-    needs: build
+    needs: [build, detect-changes]
     runs-on: ubuntu-latest
     if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && github.event_name == 'push'
     environment:
@@ -243,7 +338,7 @@ jobs:
         run: |
           echo "=== 验证部署状态 ==="
           echo "当前提交: $(git rev-parse HEAD)"
-          echo "镜像标签: ${GITHUB_SHA::8}"
+          echo "镜像标签: ${GITHUB_SHA::7}"
 
       - name: Set up kubectl
         uses: azure/setup-kubectl@v3
@@ -265,7 +360,7 @@ jobs:
       - name: Deploy to Kubernetes
         run: |
           # 设置镜像标签
-          IMAGE_TAG=${GITHUB_SHA::8}
+          IMAGE_TAG=${GITHUB_SHA::7}
           REGISTRY="${{ env.REGISTRY }}"
           IMAGE_PREFIX="${{ env.IMAGE_PREFIX }}"
           
@@ -286,8 +381,33 @@ jobs:
           kubectl create configmap trade-service-config --from-file=trade.yaml=k8s/etc/trade.yaml -n service-test --dry-run=client -o yaml | kubectl apply -f -
           kubectl create configmap web-service-config --from-file=web.yaml=k8s/etc/web.yaml -n service-test --dry-run=client -o yaml | kubectl apply -f -
           
-          # 部署各个服务
+          # 部署各个服务（只部署有变更的）
+          COMMON="${{ needs.detect-changes.outputs.common }}"
+          USER_CHANGED="${{ needs.detect-changes.outputs.user }}"
+          PRODUCT_CHANGED="${{ needs.detect-changes.outputs.product }}"
+          TRADE_CHANGED="${{ needs.detect-changes.outputs.trade }}"
+          WEB_CHANGED="${{ needs.detect-changes.outputs.web }}"
+          
           for service in user product trade web; do
+            # 检查是否需要部署
+            SHOULD_DEPLOY="false"
+            if [ "$COMMON" == "true" ]; then
+              SHOULD_DEPLOY="true"
+            elif [ "$service" == "user" ] && [ "$USER_CHANGED" == "true" ]; then
+              SHOULD_DEPLOY="true"
+            elif [ "$service" == "product" ] && [ "$PRODUCT_CHANGED" == "true" ]; then
+              SHOULD_DEPLOY="true"
+            elif [ "$service" == "trade" ] && [ "$TRADE_CHANGED" == "true" ]; then
+              SHOULD_DEPLOY="true"
+            elif [ "$service" == "web" ] && [ "$WEB_CHANGED" == "true" ]; then
+              SHOULD_DEPLOY="true"
+            fi
+            
+            if [ "$SHOULD_DEPLOY" == "false" ]; then
+              echo "Skipping $service service (no changes)"
+              continue
+            fi
+            
             echo "Deploying $service service..."
             
             # 设置镜像地址
