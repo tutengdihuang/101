@@ -1,0 +1,102 @@
+# Service Test CI Pipeline
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: service-test-pipeline
+  namespace: tekton-pipelines
+spec:
+  description: Build and push service-test microservices
+  params:
+  - name: git-url
+    type: string
+    default: https://gitee.com/bitcash/service_test.git
+  - name: git-revision
+    type: string
+    default: main
+  - name: image-registry
+    type: string
+    default: 182.42.82.135:30002/service-test
+  - name: image-tag
+    type: string
+    default: latest
+  workspaces:
+  - name: shared-workspace
+  - name: docker-credentials
+    optional: true
+  tasks:
+  # 1. Clone source code
+  - name: clone
+    taskRef:
+      name: git-clone
+    workspaces:
+    - name: output
+      workspace: shared-workspace
+    params:
+    - name: url
+      value: $(params.git-url)
+    - name: revision
+      value: $(params.git-revision)
+  
+  # 2. Build user-service
+  - name: build-user
+    runAfter: [clone]
+    taskRef:
+      name: build-push
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+    params:
+    - name: image
+      value: $(params.image-registry)/user-service
+    - name: dockerfile
+      value: dockerfiles/Dockerfile.user
+    - name: tag
+      value: $(params.image-tag)
+  
+  # 3. Build product-service
+  - name: build-product
+    runAfter: [clone]
+    taskRef:
+      name: build-push
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+    params:
+    - name: image
+      value: $(params.image-registry)/product-service
+    - name: dockerfile
+      value: dockerfiles/Dockerfile.product
+    - name: tag
+      value: $(params.image-tag)
+  
+  # 4. Build trade-service
+  - name: build-trade
+    runAfter: [clone]
+    taskRef:
+      name: build-push
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+    params:
+    - name: image
+      value: $(params.image-registry)/trade-service
+    - name: dockerfile
+      value: dockerfiles/Dockerfile.trade
+    - name: tag
+      value: $(params.image-tag)
+  
+  # 5. Build web-service
+  - name: build-web
+    runAfter: [clone]
+    taskRef:
+      name: build-push
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+    params:
+    - name: image
+      value: $(params.image-registry)/web-service
+    - name: dockerfile
+      value: dockerfiles/Dockerfile.web
+    - name: tag
+      value: $(params.image-tag)

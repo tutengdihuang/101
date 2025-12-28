@@ -1,0 +1,23 @@
+# Example PipelineRun - 手动触发构建
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: service-test-run-
+  namespace: tekton-pipelines
+spec:
+  pipelineRef:
+    name: service-test-pipeline
+  taskRunTemplate:
+    serviceAccountName: tekton-build-sa
+  params:
+  - name: git-url
+    value: https://gitee.com/bitcash/service_test.git
+  - name: git-revision
+    value: main
+  - name: image-registry
+    value: 182.42.82.135:30002/service-test
+  - name: image-tag
+    value: "1"
+  workspaces:
+  - name: shared-workspace
+    emptyDir: {}

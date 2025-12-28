@@ -9,11 +9,12 @@
 ### 已完成
 - ✅ Harbor 镜像仓库 (devops namespace)
 - ✅ ArgoCD GitOps 部署工具
+- ✅ Tekton CI 流水线
 - ✅ Gitee 仓库配置 (`git@gitee.com:bitcash/service_test.git`)
 
 ### 进行中
-- 🔄 Tekton CI 流水线
-- 🔄 GitOps 配置仓库
+- 🔄 Tekton Pipeline 配置 (service-test 项目)
+- 🔄 ArgoCD Application 配置
 
 ### 待部署
 - ⏳ Argo Rollouts (金丝雀/蓝绿发布)
@@ -60,6 +61,7 @@
 ```
 devops_platform/
 ├── README.md                    # 本文档
+├── TROUBLESHOOTING.md           # 问题排查指南 ⭐
 ├── 01_gitee/                    # Gitee 配置（同步 GitHub）
 │   └── README.md                # ✅ 已配置
 ├── 02_tekton/                   # Tekton CI 流水线

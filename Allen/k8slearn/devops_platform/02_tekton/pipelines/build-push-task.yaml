@@ -1,0 +1,51 @@
+# Build and Push Task - 使用 Kaniko 构建镜像
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: build-push
+  namespace: tekton-pipelines
+spec:
+  description: Build and push Docker image using Kaniko
+  params:
+  - name: image
+    type: string
+    description: Image name with registry
+  - name: dockerfile
+    type: string
+    default: Dockerfile
+    description: Path to Dockerfile
+  - name: context
+    type: string
+    default: .
+    description: Build context
+  - name: tag
+    type: string
+    default: latest
+    description: Image tag
+  workspaces:
+  - name: source
+    description: Source code workspace
+  - name: dockerconfig
+    description: Docker config for registry auth
+    optional: true
+  steps:
+  - name: build-and-push
+    image: gcr.io/kaniko-project/executor:latest
+    args:
+    - --dockerfile=$(params.dockerfile)
+    - --context=$(workspaces.source.path)/$(params.context)
+    - --destination=$(params.image):$(params.tag)
+    - --insecure
+    - --skip-tls-verify
+    - --cache=false
+    env:
+    - name: DOCKER_CONFIG
+      value: /kaniko/.docker
+    volumeMounts:
+    - name: docker-config
+      mountPath: /kaniko/.docker
+  volumes:
+  - name: docker-config
+    secret:
+      secretName: harbor-registry-secret
+      optional: true
