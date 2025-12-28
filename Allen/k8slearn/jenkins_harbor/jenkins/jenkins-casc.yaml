@@ -1,0 +1,98 @@
+# Jenkins Configuration as Code (JCasC)
+# 自动配置 Jenkins 设置、凭证和 Job
+
+jenkins:
+  systemMessage: "Jenkins CI/CD for go-zero microservices"
+  numExecutors: 2
+  mode: NORMAL
+  
+  # 安全配置
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "admin"
+          password: "${JENKINS_ADMIN_PASSWORD:-admin123}"
+  
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+
+# 凭证配置
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          # Harbor 凭证
+          - usernamePassword:
+              scope: GLOBAL
+              id: "harbor-credentials"
+              username: "admin"
+              password: "${HARBOR_PASSWORD:-Harbor12345}"
+              description: "Harbor Registry Credentials"
+          # GitHub 凭证 (如果需要私有仓库)
+          - usernamePassword:
+              scope: GLOBAL
+              id: "github-credentials"
+              username: "${GITHUB_USERNAME:-}"
+              password: "${GITHUB_TOKEN:-}"
+              description: "GitHub Credentials"
+
+# 全局工具配置
+tool:
+  git:
+    installations:
+      - name: "Default"
+        home: "git"
+
+# 非结构化配置
+unclassified:
+  # GitHub 服务器配置
+  gitHubPluginConfig:
+    configs:
+      - name: "GitHub"
+        apiUrl: "https://api.github.com"
+        manageHooks: true
+    hookUrl: "http://182.42.82.135:30080/github-webhook/"
+  
+  # 全局环境变量
+  globalConfigFiles:
+    configs: []
+
+# Job DSL - 自动创建 Pipeline Job
+jobs:
+  - script: |
+      pipelineJob('service-test') {
+        description('go-zero microservices CI/CD pipeline')
+        
+        // 保留构建历史
+        logRotator {
+          numToKeep(10)
+        }
+        
+        // 参数化构建
+        parameters {
+          choiceParam('SERVICE', ['all', 'user', 'product', 'trade', 'web'], '选择要构建的服务')
+          booleanParam('DEPLOY', true, '是否部署到 K8s')
+        }
+        
+        // 触发器 - GitHub Webhook
+        triggers {
+          githubPush()
+        }
+        
+        // Pipeline 定义
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote {
+                  url('https://github.com/tutengdihuang/service_test.git')
+                }
+                branches('*/main')
+              }
+            }
+            scriptPath('Jenkinsfile')
+          }
+        }
+      }

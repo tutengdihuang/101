@@ -1,0 +1,58 @@
+# Harbor Helm Chart Values
+# 适用于测试环境的简化配置
+
+expose:
+  type: nodePort
+  tls:
+    enabled: false
+  nodePort:
+    ports:
+      http:
+        nodePort: 30002
+
+externalURL: http://182.42.82.135:30002
+
+# 持久化配置 - 测试环境可以关闭
+persistence:
+  enabled: false
+
+# Harbor 管理员密码
+harborAdminPassword: "Harbor12345"
+
+trivy:
+  enabled: false
+
+notary:
+  enabled: false
+
+metrics:
+  enabled: false
+
+# 使用国内镜像源 (DaoCloud)
+core:
+  image:
+    repository: docker.m.daocloud.io/goharbor/harbor-core
+portal:
+  image:
+    repository: docker.m.daocloud.io/goharbor/harbor-portal
+jobservice:
+  image:
+    repository: docker.m.daocloud.io/goharbor/harbor-jobservice
+registry:
+  registry:
+    image:
+      repository: docker.m.daocloud.io/goharbor/registry-photon
+  controller:
+    image:
+      repository: docker.m.daocloud.io/goharbor/harbor-registryctl
+database:
+  internal:
+    image:
+      repository: docker.m.daocloud.io/goharbor/harbor-db
+redis:
+  internal:
+    image:
+      repository: docker.m.daocloud.io/goharbor/redis-photon
+nginx:
+  image:
+    repository: docker.m.daocloud.io/goharbor/nginx-photon

@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
       - name: trade
-        image: ghcr.io/tutengdihuang/service-test/trade-service:latest  # 会被 CI/CD 替换
+        image: crpi-j9gshcbjtb1i6c7h.cn-hangzhou.personal.cr.aliyuncs.com/tutengdihuang/trade-service:latest  # 会被 CI/CD 替换
         imagePullPolicy: Always
         ports:
         - containerPort: 9003

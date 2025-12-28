@@ -1,0 +1,28 @@
+# Jenkins 插件列表
+# 用于自动安装插件
+
+# 核心插件
+workflow-aggregator:latest
+git:latest
+pipeline-stage-view:latest
+
+# GitHub 集成
+github:latest
+github-branch-source:latest
+
+# Docker 支持
+docker-workflow:latest
+docker-plugin:latest
+
+# Kubernetes 支持
+kubernetes:latest
+kubernetes-cli:latest
+
+# 凭证管理
+credentials:latest
+credentials-binding:latest
+
+# 其他实用插件
+blueocean:latest
+timestamper:latest
+ws-cleanup:latest

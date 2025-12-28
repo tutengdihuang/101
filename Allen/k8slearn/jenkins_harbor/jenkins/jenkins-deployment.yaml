@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: jenkins
+  namespace: devops
+  labels:
+    app: jenkins
+spec:
+  serviceName: jenkins
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jenkins
+  template:
+    metadata:
+      labels:
+        app: jenkins
+    spec:
+      serviceAccountName: jenkins
+      # 调度到 Master 节点
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: "node-role.kubernetes.io/control-plane"
+          operator: "Exists"
+          effect: "NoSchedule"
+        - key: "node-role.kubernetes.io/master"
+          operator: "Exists"
+          effect: "NoSchedule"
+      containers:
+        - name: jenkins
+          image: docker.m.daocloud.io/jenkins/jenkins:lts-jdk17
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: web
+              protocol: TCP
+            - containerPort: 50000
+              name: agent
+              protocol: TCP
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+          env:
+            - name: JAVA_OPTS
+              value: "-Xmx1g -Xms512m -Duser.timezone=Asia/Shanghai"
+            # JCasC 配置路径
+            - name: CASC_JENKINS_CONFIG
+              value: "/var/jenkins_config/jenkins.yaml"
+            # 跳过初始化向导 (使用 JCasC 配置)
+            - name: JENKINS_OPTS
+              value: "--argumentsRealm.passwd.admin=admin123 --argumentsRealm.roles.admin=admin"
+          volumeMounts:
+            - name: jenkins-home
+              mountPath: /var/jenkins_home
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+            - name: docker-bin
+              mountPath: /usr/bin/docker
+            - name: jenkins-casc-config
+              mountPath: /var/jenkins_config
+          livenessProbe:
+            httpGet:
+              path: /login
+              port: 8080
+            initialDelaySeconds: 120
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /login
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: jenkins-home
+          persistentVolumeClaim:
+            claimName: jenkins-pvc
+        # 挂载宿主机 Docker Socket 用于构建镜像
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket
+        - name: docker-bin
+          hostPath:
+            path: /usr/bin/docker
+            type: File
+        # JCasC 配置
+        - name: jenkins-casc-config
+          configMap:
+            name: jenkins-casc-config
+      securityContext:
+        runAsUser: 0  # 以 root 运行以访问 docker.sock
+        fsGroup: 0

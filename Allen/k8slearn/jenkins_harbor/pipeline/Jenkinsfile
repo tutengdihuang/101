@@ -1,0 +1,164 @@
+// Jenkins Pipeline for go-zero microservices
+// 构建并部署到 K8s 集群
+// 代码仓库: https://github.com/tutengdihuang/service_test.git
+
+pipeline {
+    agent any
+    
+    // 触发器配置
+    // 方式 1: GitHub Webhook 触发 (推荐，需要配置 smee.io 内网穿透)
+    // 方式 2: 定时轮询 (备用)
+    triggers {
+        githubPush()           // GitHub Webhook 触发
+        // pollSCM('H/2 * * * *')  // 备用: 每 2 分钟轮询
+    }
+    
+    environment {
+        // Harbor 配置
+        HARBOR_URL = '182.42.82.135:30002'
+        HARBOR_PROJECT = 'service-test'
+        HARBOR_CREDENTIALS = 'harbor-credentials'
+        
+        // K8s 配置
+        K8S_NAMESPACE = 'service-test'
+        
+        // Go 配置
+        GO_VERSION = '1.21'
+        GOPROXY = 'https://goproxy.cn,direct'
+    }
+    
+    parameters {
+        choice(
+            name: 'SERVICE',
+            choices: ['all', 'user', 'product', 'trade', 'web'],
+            description: '选择要构建的服务'
+        )
+        booleanParam(
+            name: 'DEPLOY',
+            defaultValue: true,
+            description: '是否部署到 K8s'
+        )
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                echo "=== 拉取代码 ==="
+                checkout scm
+                sh 'git log -1 --oneline'
+            }
+        }
+        
+        stage('Build & Push Images') {
+            steps {
+                script {
+                    def services = []
+                    if (params.SERVICE == 'all') {
+                        services = ['user', 'product', 'trade', 'web']
+                    } else {
+                        services = [params.SERVICE]
+                    }
+                    
+                    // 登录 Harbor
+                    withCredentials([usernamePassword(
+                        credentialsId: env.HARBOR_CREDENTIALS,
+                        usernameVariable: 'HARBOR_USER',
+                        passwordVariable: 'HARBOR_PASS'
+                    )]) {
+                        sh "docker login -u ${HARBOR_USER} -p ${HARBOR_PASS} ${HARBOR_URL}"
+                    }
+                    
+                    // 构建每个服务
+                    services.each { service ->
+                        def imageName = "${HARBOR_URL}/${HARBOR_PROJECT}/${service}-service"
+                        def imageTag = "${env.BUILD_NUMBER}"
+                        
+                        echo "=== 构建 ${service} 服务 ==="
+                        
+                        // 构建镜像
+                        sh """
+                            docker build \
+                                -f dockerfiles/Dockerfile.${service} \
+                                -t ${imageName}:${imageTag} \
+                                -t ${imageName}:latest \
+                                .
+                        """
+                        
+                        // 推送镜像
+                        echo "=== 推送 ${service} 镜像到 Harbor ==="
+                        sh """
+                            docker push ${imageName}:${imageTag}
+                            docker push ${imageName}:latest
+                        """
+                        
+                        // 清理本地镜像
+                        sh "docker rmi ${imageName}:${imageTag} || true"
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy to K8s') {
+            when {
+                expression { params.DEPLOY == true }
+            }
+            steps {
+                script {
+                    def services = []
+                    if (params.SERVICE == 'all') {
+                        services = ['user', 'product', 'trade', 'web']
+                    } else {
+                        services = [params.SERVICE]
+                    }
+                    
+                    services.each { service ->
+                        def imageName = "${HARBOR_URL}/${HARBOR_PROJECT}/${service}-service"
+                        def imageTag = "${env.BUILD_NUMBER}"
+                        
+                        echo "=== 部署 ${service} 服务 ==="
+                        
+                        // 更新 deployment 镜像
+                        sh """
+                            kubectl set image deployment/${service}-service \
+                                ${service}=${imageName}:${imageTag} \
+                                -n ${K8S_NAMESPACE}
+                        """
+                        
+                        // 等待部署完成
+                        sh """
+                            kubectl rollout status deployment/${service}-service \
+                                -n ${K8S_NAMESPACE} \
+                                --timeout=300s
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Verify Deployment') {
+            when {
+                expression { params.DEPLOY == true }
+            }
+            steps {
+                echo "=== 验证部署状态 ==="
+                sh """
+                    kubectl get pods -n ${K8S_NAMESPACE}
+                    kubectl get svc -n ${K8S_NAMESPACE}
+                """
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo '=== Pipeline 执行成功 ==='
+        }
+        failure {
+            echo '=== Pipeline 执行失败 ==='
+        }
+        always {
+            // 清理 Docker 登录凭证
+            sh 'docker logout ${HARBOR_URL} || true'
+        }
+    }
+}

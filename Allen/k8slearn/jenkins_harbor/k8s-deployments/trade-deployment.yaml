@@ -1,28 +1,29 @@
+# Trade Service Deployment for Jenkins + Harbor
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: user-service
+  name: trade-service
   namespace: service-test
   labels:
-    app: user-service
+    app: trade-service
     version: v1
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: user-service
+      app: trade-service
   template:
     metadata:
       labels:
-        app: user-service
+        app: trade-service
         version: v1
     spec:
       containers:
-      - name: user
-        image: crpi-j9gshcbjtb1i6c7h.cn-hangzhou.personal.cr.aliyuncs.com/tutengdihuang/user-service:latest  # 会被 CI/CD 替换
+      - name: trade
+        image: 182.42.82.135:30002/service-test/trade-service:latest
         imagePullPolicy: Always
         ports:
-        - containerPort: 9001
+        - containerPort: 9003
           name: grpc
           protocol: TCP
         volumeMounts:
@@ -38,37 +39,29 @@ spec:
             cpu: "500m"
         livenessProbe:
           tcpSocket:
-            port: 9001
+            port: 9003
           initialDelaySeconds: 30
           periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
         readinessProbe:
           tcpSocket:
-            port: 9001
+            port: 9003
           initialDelaySeconds: 10
           periodSeconds: 5
-          timeoutSeconds: 3
-          failureThreshold: 3
       volumes:
       - name: config
         configMap:
-          name: user-service-config
+          name: trade-service-config
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: user-service
+  name: trade-service
   namespace: service-test
-  labels:
-    app: user-service
 spec:
   type: ClusterIP
   ports:
-  - port: 9001
-    targetPort: 9001
-    protocol: TCP
+  - port: 9003
+    targetPort: 9003
     name: grpc
   selector:
-    app: user-service
-
+    app: trade-service

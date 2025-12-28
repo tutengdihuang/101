@@ -1,0 +1,31 @@
+FROM golang:1.24-alpine AS builder
+
+WORKDIR /build
+
+# 设置 Go 代理为国内源
+ENV GOPROXY=https://goproxy.cn,direct
+
+RUN apk add --no-cache git make ca-certificates tzdata
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+WORKDIR /build/api/web
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags '-extldflags "-static"' -o web .
+
+FROM alpine:latest
+
+RUN apk --no-cache add ca-certificates tzdata
+ENV TZ=Asia/Shanghai
+
+WORKDIR /app
+
+COPY --from=builder /build/api/web/web .
+COPY --from=builder /build/api/web/etc ./etc
+
+EXPOSE 8888
+
+ENTRYPOINT ["./web"]
+CMD ["-f", "etc/web.yaml"]

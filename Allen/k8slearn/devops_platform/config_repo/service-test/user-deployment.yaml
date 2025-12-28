@@ -1,0 +1,52 @@
+# User Service Deployment - GitOps 配置
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+  namespace: service-test
+  labels:
+    app: user-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: user-service
+  template:
+    metadata:
+      labels:
+        app: user-service
+    spec:
+      containers:
+      - name: user-service
+        image: 182.42.82.135:30002/service-test/user-service:latest
+        ports:
+        - containerPort: 9001
+        resources:
+          limits:
+            cpu: 200m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        readinessProbe:
+          tcpSocket:
+            port: 9001
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 9001
+          initialDelaySeconds: 10
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service
+  namespace: service-test
+spec:
+  ports:
+  - port: 9001
+    targetPort: 9001
+  selector:
+    app: user-service

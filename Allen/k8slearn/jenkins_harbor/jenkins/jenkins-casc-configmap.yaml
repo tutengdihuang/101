@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jenkins-casc-config
+  namespace: devops
+data:
+  jenkins.yaml: |
+    jenkins:
+      systemMessage: "Jenkins CI/CD for go-zero microservices - Configured by JCasC"
+      numExecutors: 2
+      mode: NORMAL
+      
+      securityRealm:
+        local:
+          allowsSignup: false
+          users:
+            - id: "admin"
+              password: "admin123"
+      
+      authorizationStrategy:
+        loggedInUsersCanDoAnything:
+          allowAnonymousRead: false
+
+    credentials:
+      system:
+        domainCredentials:
+          - credentials:
+              - usernamePassword:
+                  scope: GLOBAL
+                  id: "harbor-credentials"
+                  username: "admin"
+                  password: "Harbor12345"
+                  description: "Harbor Registry Credentials"
+
+    unclassified:
+      gitHubPluginConfig:
+        configs:
+          - name: "GitHub"
+            apiUrl: "https://api.github.com"
+            manageHooks: false
+        hookUrl: "http://182.42.82.135:30080/github-webhook/"
+
+    jobs:
+      - script: |
+          pipelineJob('service-test') {
+            description('go-zero microservices CI/CD pipeline')
+            
+            logRotator {
+              numToKeep(10)
+            }
+            
+            parameters {
+              choiceParam('SERVICE', ['all', 'user', 'product', 'trade', 'web'], '选择要构建的服务')
+              booleanParam('DEPLOY', true, '是否部署到 K8s')
+            }
+            
+            triggers {
+              githubPush()
+            }
+            
+            definition {
+              cpsScm {
+                scm {
+                  git {
+                    remote {
+                      url('https://github.com/tutengdihuang/service_test.git')
+                    }
+                    branches('*/main')
+                  }
+                }
+                scriptPath('Jenkinsfile')
+              }
+            }
+          }

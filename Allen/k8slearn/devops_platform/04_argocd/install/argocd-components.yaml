@@ -1,0 +1,242 @@
+# ArgoCD 核心组件 - 使用 DaoCloud 镜像
+---
+# Redis
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-redis
+  namespace: argocd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: argocd-redis
+    spec:
+      containers:
+      - name: redis
+        image: docker.m.daocloud.io/library/redis:7.0-alpine
+        ports:
+        - containerPort: 6379
+        resources:
+          limits:
+            cpu: 200m
+            memory: 128Mi
+          requests:
+            cpu: 100m
+            memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: argocd-redis
+  namespace: argocd
+spec:
+  ports:
+  - port: 6379
+    targetPort: 6379
+  selector:
+    app.kubernetes.io/name: argocd-redis
+---
+# Repo Server
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-repo-server
+  namespace: argocd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-repo-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: argocd-repo-server
+    spec:
+      serviceAccountName: argocd-repo-server
+      containers:
+      - name: argocd-repo-server
+        image: quay.io/argoproj/argocd:v2.9.3
+        command: [argocd-repo-server]
+        ports:
+        - containerPort: 8081
+        - containerPort: 8084
+        env:
+        - name: ARGOCD_RECONCILIATION_TIMEOUT
+          value: "180s"
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 256Mi
+        readinessProbe:
+          tcpSocket:
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 8081
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: argocd-repo-server
+  namespace: argocd
+spec:
+  ports:
+  - name: server
+    port: 8081
+    targetPort: 8081
+  - name: metrics
+    port: 8084
+    targetPort: 8084
+  selector:
+    app.kubernetes.io/name: argocd-repo-server
+---
+# Application Controller
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-application-controller
+  namespace: argocd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-application-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: argocd-application-controller
+    spec:
+      serviceAccountName: argocd-application-controller
+      containers:
+      - name: argocd-application-controller
+        image: quay.io/argoproj/argocd:v2.9.3
+        command: [argocd-application-controller]
+        args:
+        - --redis
+        - argocd-redis:6379
+        - --repo-server
+        - argocd-repo-server:8081
+        - --status-processors
+        - "20"
+        - --operation-processors
+        - "10"
+        ports:
+        - containerPort: 8082
+        env:
+        - name: ARGOCD_RECONCILIATION_TIMEOUT
+          value: "180s"
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: argocd-application-controller
+  namespace: argocd
+spec:
+  ports:
+  - port: 8082
+    targetPort: 8082
+  selector:
+    app.kubernetes.io/name: argocd-application-controller
+---
+# ArgoCD Server (API + UI)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-server
+  namespace: argocd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: argocd-server
+    spec:
+      serviceAccountName: argocd-server
+      containers:
+      - name: argocd-server
+        image: quay.io/argoproj/argocd:v2.9.3
+        command: [argocd-server]
+        args:
+        - --redis
+        - argocd-redis:6379
+        - --repo-server
+        - argocd-repo-server:8081
+        - --insecure
+        ports:
+        - containerPort: 8080
+        - containerPort: 8083
+        env:
+        - name: ARGOCD_SERVER_INSECURE
+          value: "true"
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 256Mi
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: argocd-server
+  namespace: argocd
+spec:
+  type: NodePort
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    nodePort: 30090
+  - name: https
+    port: 443
+    targetPort: 8080
+    nodePort: 30091
+  selector:
+    app.kubernetes.io/name: argocd-server
