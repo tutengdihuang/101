@@ -30,9 +30,12 @@ spec:
     optional: true
   steps:
   - name: build-and-push
-    image: gcr.io/kaniko-project/executor:latest
+    image: 182.42.82.135:30002/service-test/kaniko:latest
+    # 显式指定 command，避免 Tekton 访问仓库获取镜像信息
+    command:
+    - /kaniko/executor
     args:
-    - --dockerfile=$(params.dockerfile)
+    - --dockerfile=$(workspaces.source.path)/$(params.dockerfile)
     - --context=$(workspaces.source.path)/$(params.context)
     - --destination=$(params.image):$(params.tag)
     - --insecure

@@ -1,0 +1,77 @@
+# Simple Pipeline - 并行构建 4 个服务
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: service-test-simple
+  namespace: tekton-pipelines
+spec:
+  params:
+  - name: git-url
+    type: string
+    default: https://gitee.com/bitcash/service_test.git
+  - name: git-revision
+    type: string
+    default: main
+  - name: image-registry
+    type: string
+    default: 182.42.82.135:30002/service-test
+  - name: image-tag
+    type: string
+    default: "1"
+  tasks:
+  - name: build-user
+    taskRef:
+      name: build-service
+    params:
+    - name: git-url
+      value: $(params.git-url)
+    - name: git-revision
+      value: $(params.git-revision)
+    - name: image
+      value: $(params.image-registry)/user-service
+    - name: dockerfile
+      value: dockerfiles/Dockerfile.user
+    - name: tag
+      value: $(params.image-tag)
+  - name: build-product
+    taskRef:
+      name: build-service
+    params:
+    - name: git-url
+      value: $(params.git-url)
+    - name: git-revision
+      value: $(params.git-revision)
+    - name: image
+      value: $(params.image-registry)/product-service
+    - name: dockerfile
+      value: dockerfiles/Dockerfile.product
+    - name: tag
+      value: $(params.image-tag)
+  - name: build-trade
+    taskRef:
+      name: build-service
+    params:
+    - name: git-url
+      value: $(params.git-url)
+    - name: git-revision
+      value: $(params.git-revision)
+    - name: image
+      value: $(params.image-registry)/trade-service
+    - name: dockerfile
+      value: dockerfiles/Dockerfile.trade
+    - name: tag
+      value: $(params.image-tag)
+  - name: build-web
+    taskRef:
+      name: build-service
+    params:
+    - name: git-url
+      value: $(params.git-url)
+    - name: git-revision
+      value: $(params.git-revision)
+    - name: image
+      value: $(params.image-registry)/web-service
+    - name: dockerfile
+      value: dockerfiles/Dockerfile.web
+    - name: tag
+      value: $(params.image-tag)

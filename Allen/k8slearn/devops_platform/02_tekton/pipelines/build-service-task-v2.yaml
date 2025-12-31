@@ -1,0 +1,57 @@
+# Build Service Task - 克隆代码并构建镜像
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: build-service-v2
+  namespace: tekton-pipelines
+spec:
+  description: Clone, build and push a service image
+  params:
+  - name: git-url
+    type: string
+    description: Git repository URL
+  - name: git-revision
+    type: string
+    default: main
+  - name: image
+    type: string
+    description: Full image name with registry
+  - name: dockerfile
+    type: string
+    description: Path to Dockerfile
+  - name: tag
+    type: string
+    default: latest
+  steps:
+  # Step 1: Clone
+  - name: clone
+    image: docker.m.daocloud.io/alpine/git:latest
+    command: ["/bin/sh"]
+    args:
+    - -c
+    - |
+      set -ex
+      cd /workspace
+      git clone $(params.git-url) source
+      cd source
+      git checkout $(params.git-revision)
+      echo "Cloned at $(git rev-parse HEAD)"
+      ls -la
+  # Step 2: Build and Push
+  - name: build-and-push
+    image: 182.42.82.135:30002/service-test/kaniko:latest
+    command: ["/kaniko/executor"]
+    args:
+    - --dockerfile=/workspace/source/$(params.dockerfile)
+    - --context=/workspace/source
+    - --destination=$(params.image):$(params.tag)
+    - --insecure
+    - --skip-tls-verify
+    - --cache=false
+    volumeMounts:
+    - name: docker-config
+      mountPath: /kaniko/.docker
+  volumes:
+  - name: docker-config
+    secret:
+      secretName: harbor-kaniko-secret

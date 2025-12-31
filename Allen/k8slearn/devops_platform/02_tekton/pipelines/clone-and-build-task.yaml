@@ -1,0 +1,77 @@
+# Clone and Build Task - 合并 clone 和 build 到同一个 Pod
+# 解决 emptyDir 数据不共享问题
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: clone-and-build
+  namespace: tekton-pipelines
+spec:
+  description: Clone git repo and build Docker image using Kaniko
+  params:
+  - name: git-url
+    type: string
+    description: Git repository URL
+  - name: git-revision
+    type: string
+    default: main
+  - name: image
+    type: string
+    description: Image name with registry
+  - name: dockerfile
+    type: string
+    default: Dockerfile
+  - name: context
+    type: string
+    default: .
+  - name: tag
+    type: string
+    default: latest
+  results:
+  - name: commit
+    description: The commit SHA
+  - name: image-digest
+    description: The image digest
+  steps:
+  # Step 1: Clone
+  - name: clone
+    image: docker.m.daocloud.io/alpine/git:latest
+    script: |
+      #!/bin/sh
+      set -ex
+      cd /workspace/source
+      git clone $(params.git-url) .
+      git checkout $(params.git-revision)
+      COMMIT=$(git rev-parse HEAD)
+      echo -n $COMMIT > $(results.commit.path)
+      echo "Cloned commit: $COMMIT"
+      ls -la
+      ls -la dockerfiles/ || echo "No dockerfiles dir"
+    volumeMounts:
+    - name: source
+      mountPath: /workspace/source
+  # Step 2: Build and Push
+  - name: build-and-push
+    image: gcr.io/kaniko-project/executor:latest
+    args:
+    - --dockerfile=/workspace/source/$(params.dockerfile)
+    - --context=/workspace/source/$(params.context)
+    - --destination=$(params.image):$(params.tag)
+    - --insecure
+    - --skip-tls-verify
+    - --cache=false
+    - --verbosity=info
+    env:
+    - name: DOCKER_CONFIG
+      value: /kaniko/.docker
+    volumeMounts:
+    - name: source
+      mountPath: /workspace/source
+    - name: docker-config
+      mountPath: /kaniko/.docker
+  volumes:
+  - name: source
+    emptyDir: {}
+  - name: docker-config
+    secret:
+      secretName: harbor-registry-secret
+      optional: true

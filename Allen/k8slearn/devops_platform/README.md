@@ -7,13 +7,17 @@
 **更新时间**: 2024-12-28
 
 ### 已完成
-- ✅ Harbor 镜像仓库 (devops namespace)
-- ✅ ArgoCD GitOps 部署工具
-- ✅ Tekton CI 流水线
+- ✅ Harbor 镜像仓库 (devops namespace) - `http://<MASTER_IP>:30002`
+- ✅ ArgoCD GitOps 部署工具 - `http://<MASTER_IP>:30090` (admin/admin123)
+- ✅ Tekton CI 流水线 (Controller + Webhook + Resolvers)
 - ✅ Gitee 仓库配置 (`git@gitee.com:bitcash/service_test.git`)
+- ✅ 镜像预导入 (entrypoint, busybox, kaniko)
+- ✅ Kaniko 镜像推送到 Harbor
+- ✅ git-clone Task 执行成功
+- ✅ 解决 Tekton 访问仓库验证镜像问题 (显式指定 command)
 
 ### 进行中
-- 🔄 Tekton Pipeline 配置 (service-test 项目)
+- 🔄 解决 emptyDir 数据不共享问题 (创建合并的 clone-and-build Task)
 - 🔄 ArgoCD Application 配置
 
 ### 待部署
@@ -84,6 +88,32 @@ devops_platform/
 
 ## 已部署组件详情
 
+### Tekton
+
+| 项目 | 值 |
+|------|-----|
+| **命名空间** | tekton-pipelines |
+| **版本** | v1.6.0 |
+| **组件** | Controller, Webhook, Events Controller, Resolvers |
+
+**已创建的 Pipeline 资源**:
+- `git-clone` Task - 从 Gitee 拉取代码
+- `build-push` Task - 使用 Kaniko 构建镜像
+- `service-test-pipeline` Pipeline - 编排 4 个服务构建
+
+**已预导入的镜像** (所有 Worker 节点):
+- `ghcr.io/tektoncd/pipeline/entrypoint-xxx:v1.6.0`
+- `cgr.dev/chainguard/busybox:latest`
+- `gcr.io/kaniko-project/executor:latest`
+
+**Harbor 中的镜像**:
+- `182.42.82.135:30002/service-test/kaniko:latest`
+
+**当前卡点**:
+- ~~build-push Task 失败: Tekton 控制器访问镜像仓库时 HTTPS/HTTP 不匹配~~ ✅ 已解决
+- emptyDir 数据不共享: Clone 和 Build 在不同 Pod，数据无法传递
+- 解决方案: 创建合并的 clone-and-build Task
+
 ### ArgoCD
 
 | 项目 | 值 |
@@ -117,11 +147,14 @@ argocd-server                   1/1     Running
 ```
 阶段 1: 基础设施 ✅
 ├── Gitee 同步配置 ✅
-├── Harbor ✅ (已完成)
-└── ArgoCD ✅ (已完成)
+├── Harbor ✅
+└── ArgoCD ✅
 
 阶段 2: CI 流水线 🔄
-└── Tekton (进行中)
+├── Tekton 安装 ✅
+├── Pipeline 资源创建 ✅
+├── 镜像预导入 ✅
+└── Pipeline 调试 🔄
 
 阶段 3: 监控
 ├── Prometheus

@@ -1,0 +1,18 @@
+# PipelineRun v2
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: service-test-v2-
+  namespace: tekton-pipelines
+spec:
+  pipelineRef:
+    name: service-test-simple-v2
+  params:
+  - name: git-url
+    value: https://gitee.com/bitcash/service_test.git
+  - name: git-revision
+    value: main
+  - name: image-registry
+    value: 182.42.82.135:30002/service-test
+  - name: image-tag
+    value: "3"
