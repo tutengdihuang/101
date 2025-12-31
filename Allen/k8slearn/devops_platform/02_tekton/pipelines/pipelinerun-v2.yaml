@@ -7,6 +7,9 @@ metadata:
 spec:
   pipelineRef:
     name: service-test-simple-v2
+  timeouts:
+    pipeline: 3h
+    tasks: 2h
   params:
   - name: git-url
     value: https://gitee.com/bitcash/service_test.git
@@ -15,4 +18,4 @@ spec:
   - name: image-registry
     value: 182.42.82.135:30002/service-test
   - name: image-tag
-    value: "3"
+    value: v1

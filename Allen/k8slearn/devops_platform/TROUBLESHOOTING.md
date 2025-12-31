@@ -1067,3 +1067,260 @@ kubectl get pod <pod-name> -o jsonpath='{.spec.containers[?(@.name=="step-xxx")]
 ```bash
 kubectl exec -it <pod-name> -n tekton-pipelines -c step-<step-name> -- /bin/sh
 ```
+
+
+---
+
+## 问题 23: K8s Worker 节点 NotReady 导致 Harbor 服务不可用
+
+**现象**:
+- Harbor 返回 502 Bad Gateway
+- Tekton TaskRun 显示 `TaskRunImagePullFailed`
+- `kubectl get nodes` 显示某个 Worker 节点 NotReady
+
+**排查步骤**:
+```bash
+# 1. 检查节点状态
+kubectl get nodes
+
+# 2. 查看节点详情
+kubectl describe node <node-name> | grep -A 10 "Conditions:"
+
+# 3. 检查 Harbor Pod 状态
+kubectl get pods -n devops
+
+# 4. 查看 Harbor 组件日志
+kubectl logs <harbor-core-pod> -n devops --tail=30
+```
+
+**根本原因**:
+- Worker 节点的 kubelet 停止心跳，节点变为 NotReady
+- 运行在该节点上的 Harbor Redis 和 Database Pod 处于 Terminating 状态
+- Harbor Core 和 JobService 无法连接 Redis，进入 CrashLoopBackOff
+- 整个 Harbor 服务不可用
+
+**解决方案**:
+
+方案 1 - 恢复节点:
+```bash
+# SSH 到故障节点重启 kubelet
+ssh root@<node-ip> 'systemctl restart kubelet'
+
+# 等待节点恢复
+kubectl get nodes -w
+```
+
+方案 2 - 强制删除 Terminating Pod (节点无法恢复时):
+```bash
+kubectl delete pod <pod-name> -n devops --force --grace-period=0
+```
+
+方案 3 - 重启 CrashLoopBackOff 的 Pod:
+```bash
+# 节点恢复后，删除 CrashLoopBackOff 的 Pod 让其重建
+kubectl delete pod <harbor-core-pod> <harbor-jobservice-pod> -n devops
+```
+
+**验证**:
+```bash
+# 检查 Harbor 健康状态
+curl -s -u admin:Harbor12345 http://182.42.82.135:30002/api/v2.0/health
+```
+
+---
+
+## 问题 24: Harbor 项目丢失导致镜像拉取 401 Unauthorized
+
+**现象**:
+```
+failed to pull and unpack image "182.42.82.135:30002/service-test/kaniko:latest": 
+unexpected status from HEAD request: 401 Unauthorized
+```
+
+**原因**: Harbor 数据库重建后，之前创建的项目丢失
+
+**排查步骤**:
+```bash
+# 检查 Harbor 项目列表
+curl -s -u admin:Harbor12345 http://182.42.82.135:30002/api/v2.0/projects | python3 -m json.tool
+```
+
+**解决方案**:
+```bash
+# 1. 重新创建项目
+curl -X POST -u admin:Harbor12345 \
+  -H "Content-Type: application/json" \
+  http://182.42.82.135:30002/api/v2.0/projects \
+  -d '{"project_name": "service-test", "public": true}'
+
+# 2. 重新推送镜像
+docker push 182.42.82.135:30002/service-test/kaniko:latest
+```
+
+---
+
+## 问题 25: Kaniko 构建时无法拉取 Docker Hub 基础镜像
+
+**现象**:
+```
+error building image: unable to complete operation after 0 attempts, last error: 
+Get "https://index.docker.io/v2/": dial tcp 168.143.162.42:443: i/o timeout
+```
+
+**原因**: 国内服务器无法访问 Docker Hub (index.docker.io)
+
+**解决方案**:
+
+方案 1 - 预导入基础镜像到 Harbor:
+```bash
+# 1. 使用 DaoCloud 镜像加速拉取
+docker pull docker.m.daocloud.io/library/golang:1.24-alpine
+docker pull docker.m.daocloud.io/library/alpine:latest
+
+# 2. 推送到 Harbor
+docker tag docker.m.daocloud.io/library/golang:1.24-alpine 182.42.82.135:30002/library/golang:1.24-alpine
+docker push 182.42.82.135:30002/library/golang:1.24-alpine
+
+docker tag docker.m.daocloud.io/library/alpine:latest 182.42.82.135:30002/library/alpine:latest
+docker push 182.42.82.135:30002/library/alpine:latest
+```
+
+方案 2 - 配置 Kaniko 使用 Harbor 作为镜像代理:
+```yaml
+# 在 Task 中添加 --registry-mirror 参数
+args:
+- --registry-mirror=182.42.82.135:30002
+- --insecure-pull
+```
+
+**注意**: 需要确保 Harbor 中有对应的 `library/golang` 和 `library/alpine` 镜像
+
+---
+
+## 问题 26: Tekton TaskRun 超时 (TaskRunTimeout)
+
+**现象**:
+```
+NAME                    SUCCEEDED   REASON           STARTTIME   COMPLETIONTIME
+build-user-xxx          False       TaskRunTimeout   70m         10m
+```
+
+**原因**: Go 编译耗时较长，超过了默认的 1 小时超时时间
+
+**解决方案**:
+
+方案 1 - 在 Task 中设置 step 超时:
+```yaml
+steps:
+- name: build-and-push
+  image: kaniko
+  timeout: 2h  # 设置 step 超时
+  args: [...]
+```
+
+方案 2 - 在 PipelineRun 中设置全局超时:
+```yaml
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+spec:
+  timeouts:
+    pipeline: 3h  # Pipeline 总超时
+    tasks: 2h     # 单个 Task 超时
+```
+
+方案 3 - 优化 Kaniko 构建速度:
+```yaml
+args:
+- --single-snapshot   # 减少快照次数
+- --use-new-run       # 使用新的运行模式
+- --cache=false       # 禁用缓存（如果缓存有问题）
+```
+
+---
+
+## 问题 27: Harbor 返回 502 Bad Gateway 导致 Kaniko 构建失败
+
+**现象**:
+```
+error building image: failed to get filesystem from image: 
+GET http://182.42.82.135:30002/v2/library/alpine/blobs/sha256:xxx: 
+unexpected status code 502 Bad Gateway
+```
+
+**原因**: Harbor 服务短暂不可用（可能是 Pod 重启、资源不足等）
+
+**排查步骤**:
+```bash
+# 1. 检查 Harbor Pod 状态
+kubectl get pods -n devops
+
+# 2. 检查 Harbor 健康状态
+curl -s -u admin:Harbor12345 http://182.42.82.135:30002/api/v2.0/health
+
+# 3. 查看 Harbor Core 日志
+kubectl logs -n devops -l app=harbor -l component=core --tail=50
+```
+
+**解决方案**:
+```bash
+# 1. 等待 Harbor 恢复后重新运行 TaskRun
+kubectl delete taskrun <failed-taskrun> -n tekton-pipelines
+
+# 2. 重新触发构建
+kubectl create -f pipelinerun-v2.yaml
+```
+
+---
+
+## 2025-12-31 CI Pipeline 完成总结
+
+### 遇到的问题链
+
+```
+1. worker2 节点 NotReady
+   └── 2. Harbor Redis/Database Terminating
+       └── 3. Harbor Core CrashLoopBackOff
+           └── 4. Tekton 拉取镜像 502 Bad Gateway
+               └── 5. TaskRun ImagePullFailed
+```
+
+### 解决过程
+
+1. **节点恢复**: 等待/重启 worker2 节点的 kubelet
+2. **Pod 重建**: 删除 CrashLoopBackOff 的 Harbor Pod
+3. **项目重建**: 重新创建 Harbor 的 service-test 项目
+4. **镜像推送**: 重新推送 kaniko 镜像到 Harbor
+5. **基础镜像**: 预导入 golang 和 alpine 到 Harbor
+6. **镜像代理**: 配置 Kaniko 使用 Harbor 作为 registry-mirror
+7. **超时调整**: 增加 Task 超时到 2h
+
+### 最终配置
+
+**build-service-v2 Task 关键配置**:
+```yaml
+steps:
+- name: build-and-push
+  image: 182.42.82.135:30002/service-test/kaniko:latest
+  command: ["/kaniko/executor"]
+  args:
+  - --dockerfile=/workspace/source/$(params.dockerfile)
+  - --context=/workspace/source
+  - --destination=$(params.image):$(params.tag)
+  - --insecure
+  - --skip-tls-verify
+  - --cache=false
+  - --registry-mirror=182.42.82.135:30002  # Harbor 作为镜像代理
+  - --insecure-pull
+  - --single-snapshot   # 优化构建速度
+  - --use-new-run
+  timeout: 2h  # 增加超时时间
+```
+
+### 构建成果
+
+| 镜像 | 状态 |
+|------|------|
+| service-test/user-service:v1 | ✅ |
+| service-test/product-service:v1 | ✅ |
+| service-test/trade-service:v1 | ✅ |
+| service-test/web-service:v1 | ✅ |

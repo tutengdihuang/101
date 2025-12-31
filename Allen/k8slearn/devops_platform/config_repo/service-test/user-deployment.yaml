@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
       - name: user-service
-        image: 182.42.82.135:30002/service-test/user-service:latest
+        image: 182.42.82.135:30002/service-test/user-service:v1
         ports:
         - containerPort: 9001
         resources:

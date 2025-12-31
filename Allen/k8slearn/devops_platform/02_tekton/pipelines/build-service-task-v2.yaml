@@ -35,7 +35,6 @@ spec:
       git clone $(params.git-url) source
       cd source
       git checkout $(params.git-revision)
-      echo "Cloned at $(git rev-parse HEAD)"
       ls -la
   # Step 2: Build and Push
   - name: build-and-push
@@ -48,6 +47,11 @@ spec:
     - --insecure
     - --skip-tls-verify
     - --cache=false
+    - --registry-mirror=182.42.82.135:30002
+    - --insecure-pull
+    - --single-snapshot
+    - --use-new-run
+    timeout: 2h
     volumeMounts:
     - name: docker-config
       mountPath: /kaniko/.docker
