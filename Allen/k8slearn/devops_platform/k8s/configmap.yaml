@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: etcd-config
+  namespace: service-test
+data:
+  etcd-endpoints: "etcd-service:2379"
+  etcd-key-prefix: "/service-test"
+

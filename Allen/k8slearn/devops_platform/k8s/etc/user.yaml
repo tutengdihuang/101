@@ -1,0 +1,13 @@
+Name: user.rpc
+ListenOn: 0.0.0.0:9001
+Etcd:
+  Hosts:
+    - etcd-service:2379
+  Key: user.rpc
+TradeRpc:
+  Etcd:
+    Hosts:
+      - etcd-service:2379
+    Key: trade.rpc
+  NonBlock: true
+  Timeout: 5000

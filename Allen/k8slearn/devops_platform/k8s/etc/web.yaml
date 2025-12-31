@@ -1,0 +1,24 @@
+Name: web-api
+Host: 0.0.0.0
+Port: 8888
+UserRpc:
+  Etcd:
+    Hosts:
+      - etcd-service:2379
+    Key: user.rpc
+  NonBlock: true
+  Timeout: 5000
+ProductRpc:
+  Etcd:
+    Hosts:
+      - etcd-service:2379
+    Key: product.rpc
+  NonBlock: true
+  Timeout: 5000
+TradeRpc:
+  Etcd:
+    Hosts:
+      - etcd-service:2379
+    Key: trade.rpc
+  NonBlock: true
+  Timeout: 5000

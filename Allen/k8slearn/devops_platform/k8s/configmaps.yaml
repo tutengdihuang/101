@@ -1,0 +1,96 @@
+# Service ConfigMaps
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-service-config
+  namespace: service-test
+data:
+  user.yaml: |
+    Name: user.rpc
+    ListenOn: 0.0.0.0:9001
+    Etcd:
+      Hosts:
+        - etcd-service:2379
+      Key: user.rpc
+    TradeRpc:
+      Etcd:
+        Hosts:
+          - etcd-service:2379
+        Key: trade.rpc
+      NonBlock: true
+      Timeout: 5000
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: product-service-config
+  namespace: service-test
+data:
+  product.yaml: |
+    Name: product.rpc
+    ListenOn: 0.0.0.0:9002
+    Etcd:
+      Hosts:
+        - etcd-service:2379
+      Key: product.rpc
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trade-service-config
+  namespace: service-test
+data:
+  trade.yaml: |
+    Name: trade.rpc
+    ListenOn: 0.0.0.0:9003
+    Etcd:
+      Hosts:
+        - etcd-service:2379
+      Key: trade.rpc
+    UserRpc:
+      Etcd:
+        Hosts:
+          - etcd-service:2379
+        Key: user.rpc
+      NonBlock: true
+      Timeout: 5000
+    ProductRpc:
+      Etcd:
+        Hosts:
+          - etcd-service:2379
+        Key: product.rpc
+      NonBlock: true
+      Timeout: 5000
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-service-config
+  namespace: service-test
+data:
+  web.yaml: |
+    Name: web-api
+    Host: 0.0.0.0
+    Port: 8888
+    UserRpc:
+      Etcd:
+        Hosts:
+          - etcd-service:2379
+        Key: user.rpc
+      NonBlock: true
+      Timeout: 5000
+    ProductRpc:
+      Etcd:
+        Hosts:
+          - etcd-service:2379
+        Key: product.rpc
+      NonBlock: true
+      Timeout: 5000
+    TradeRpc:
+      Etcd:
+        Hosts:
+          - etcd-service:2379
+        Key: trade.rpc
+      NonBlock: true
+      Timeout: 5000
