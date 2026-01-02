@@ -1,0 +1,75 @@
+# 蓝绿部署示例
+# 演示蓝绿部署配置
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: bluegreen-demo
+  namespace: default
+spec:
+  replicas: 3
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      app: bluegreen-demo
+  strategy:
+    blueGreen:
+      # 当前活跃的 Service（接收生产流量）
+      activeService: bluegreen-demo-active
+      
+      # 预览 Service（新版本，用于测试）
+      previewService: bluegreen-demo-preview
+      
+      # 是否自动切换（false = 需要手动确认）
+      autoPromotionEnabled: false
+      
+      # 自动切换前的等待时间（如果 autoPromotionEnabled: true）
+      # autoPromotionSeconds: 30
+      
+      # 切换后保留旧版本的时间
+      scaleDownDelaySeconds: 30
+      
+      # 预览版本的副本数（可选）
+      # previewReplicaCount: 1
+  template:
+    metadata:
+      labels:
+        app: bluegreen-demo
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.19
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+---
+# Active Service - 接收生产流量
+apiVersion: v1
+kind: Service
+metadata:
+  name: bluegreen-demo-active
+  namespace: default
+spec:
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: bluegreen-demo
+---
+# Preview Service - 新版本测试
+apiVersion: v1
+kind: Service
+metadata:
+  name: bluegreen-demo-preview
+  namespace: default
+spec:
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: bluegreen-demo

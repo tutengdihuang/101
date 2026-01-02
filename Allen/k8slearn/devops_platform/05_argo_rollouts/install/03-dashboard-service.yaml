@@ -1,0 +1,19 @@
+# Argo Rollouts Dashboard NodePort Service
+# 用于外部访问 Rollouts Dashboard
+apiVersion: v1
+kind: Service
+metadata:
+  name: argo-rollouts-dashboard-external
+  namespace: argo-rollouts
+  labels:
+    app.kubernetes.io/name: argo-rollouts-dashboard
+spec:
+  type: NodePort
+  ports:
+  - port: 3100
+    targetPort: 3100
+    nodePort: 30100
+    protocol: TCP
+    name: dashboard
+  selector:
+    app.kubernetes.io/name: argo-rollouts-dashboard

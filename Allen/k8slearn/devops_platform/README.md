@@ -29,7 +29,7 @@
 | `library/alpine` | latest | ✅ |
 
 ### 待部署
-- ⏳ Argo Rollouts (金丝雀/蓝绿发布)
+- 🔧 Argo Rollouts (金丝雀/蓝绿发布) - **配置已就绪，待安装**
 - ⏳ Prometheus + Grafana (监控)
 - ⏳ SonarQube (代码扫描)
 - ⏳ Trivy (镜像扫描)
@@ -269,5 +269,5 @@ curl http://182.42.82.135:30888/api/user/1
 2. ~~Tekton Triggers 自动触发~~ ✅
 3. ~~ArgoCD Application 配置~~ ✅
 4. ~~完整 CI/CD 流程验证~~ ✅
-5. 部署 Prometheus + Grafana 监控
-6. 部署 Argo Rollouts 实现金丝雀发布
+5. **安装 Argo Rollouts 实现金丝雀发布** ← 当前
+6. 部署 Prometheus + Grafana 监控

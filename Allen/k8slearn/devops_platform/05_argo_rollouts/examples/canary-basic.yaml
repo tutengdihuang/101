@@ -1,0 +1,62 @@
+# 基础金丝雀发布示例
+# 演示最简单的金丝雀发布配置
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: canary-demo
+  namespace: default
+spec:
+  replicas: 5
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      app: canary-demo
+  strategy:
+    canary:
+      steps:
+      # 第1步：20% 流量，暂停等待手动确认
+      - setWeight: 20
+      - pause: {}              # 无时间限制，需要手动 promote
+      
+      # 第2步：40% 流量，暂停 30 秒
+      - setWeight: 40
+      - pause: {duration: 30s}
+      
+      # 第3步：60% 流量，暂停 30 秒
+      - setWeight: 60
+      - pause: {duration: 30s}
+      
+      # 第4步：80% 流量，暂停 30 秒
+      - setWeight: 80
+      - pause: {duration: 30s}
+      
+      # 最后：100% 流量，发布完成
+  template:
+    metadata:
+      labels:
+        app: canary-demo
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.19
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: canary-demo
+  namespace: default
+spec:
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: canary-demo
