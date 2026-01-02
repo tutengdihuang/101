@@ -1,0 +1,12 @@
+# TriggerBinding - 从 Webhook 请求中提取参数
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerBinding
+metadata:
+  name: gitee-push-binding
+  namespace: tekton-pipelines
+spec:
+  params:
+  - name: git-revision
+    value: $(body.after)
+  - name: git-repo-url
+    value: $(body.repository.clone_url)

@@ -1324,3 +1324,488 @@ steps:
 | service-test/product-service:v1 | ✅ |
 | service-test/trade-service:v1 | ✅ |
 | service-test/web-service:v1 | ✅ |
+
+
+---
+
+## 2025-12-31 CD 部署完成总结
+
+### 问题 28: ArgoCD Application 同步成功但没有创建资源
+
+**现象**:
+- `kubectl get applications -n argocd` 显示 Synced
+- `kubectl get pods -n service-test` 显示 No resources found
+
+**原因**: ArgoCD 默认只扫描 `path` 目录下的顶层 YAML 文件，不会递归扫描子目录
+
+**Gitee 仓库结构**:
+```
+k8s/
+├── configmaps.yaml      ← ArgoCD 能看到
+├── namespace.yaml       ← ArgoCD 能看到
+├── user/
+│   └── deployment.yaml  ← ArgoCD 看不到！
+├── product/
+│   └── deployment.yaml  ← ArgoCD 看不到！
+└── ...
+```
+
+**解决方案**: 在 Application 配置中添加 `directory.recurse: true`
+
+```yaml
+spec:
+  source:
+    repoURL: https://gitee.com/bitcash/service_test.git
+    targetRevision: main
+    path: k8s
+    directory:
+      recurse: true  # 添加这行，递归扫描子目录
+```
+
+---
+
+### 问题 29: ArgoCD 同步后 Pod ImagePullBackOff
+
+**现象**:
+```
+NAME                    READY   STATUS             RESTARTS   AGE
+user-service-xxx        0/1     ImagePullBackOff   0          10h
+```
+
+**排查**:
+```bash
+kubectl describe pod user-service-xxx -n service-test | tail -10
+# 显示: Back-off pulling image "182.42.82.135:30002/service-test/user-service:6"
+```
+
+**原因**: Gitee 仓库中的 k8s 配置文件镜像 tag 是 `:6`，但 Harbor 中只有 `:v1`
+
+**解决方案**: 修改 Gitee 仓库中的 deployment 文件，将镜像 tag 改为 `:v1`
+
+```yaml
+# 修改前
+image: 182.42.82.135:30002/service-test/user-service:6
+
+# 修改后
+image: 182.42.82.135:30002/service-test/user-service:v1
+```
+
+---
+
+### 问题 30: ArgoCD 同步后 web-service CrashLoopBackOff
+
+**现象**:
+```
+NAME                    READY   STATUS             RESTARTS   AGE
+web-service-xxx         0/1     CrashLoopBackOff   6          5m
+```
+
+**排查**:
+```bash
+kubectl logs web-service-xxx -n service-test --tail=20
+# 显示: [HTTP] 404 - GET /health - kube-probe/1.28
+```
+
+**原因**: web-service 没有 `/health` 端点，但 deployment 配置了 HTTP 健康检查
+
+**解决方案**: 将 HTTP 健康检查改为 TCP 探针
+
+```yaml
+# 修改前 - HTTP 探针
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8888
+
+# 修改后 - TCP 探针
+livenessProbe:
+  tcpSocket:
+    port: 8888
+```
+
+---
+
+### 问题 31: ArgoCD 不自动同步最新提交
+
+**现象**: 推送代码到 Gitee 后，ArgoCD 没有立即同步
+
+**原因**: ArgoCD 默认每 3 分钟轮询一次 Git 仓库
+
+**解决方案**:
+
+方案 1 - 手动触发同步:
+```bash
+kubectl annotate application service-test -n argocd argocd.argoproj.io/refresh=hard --overwrite
+```
+
+方案 2 - 配置 Webhook (推荐生产环境):
+- 在 Gitee 仓库设置中添加 Webhook
+- URL: `http://<argocd-server>/api/webhook`
+
+方案 3 - 调整轮询间隔:
+```bash
+kubectl edit configmap argocd-cm -n argocd
+# 添加: timeout.reconciliation: 60s
+```
+
+---
+
+### CD 部署流程总结
+
+```
+1. 创建 ArgoCD Application
+   └── 指向 Gitee 仓库的 k8s 目录
+   
+2. 配置 directory.recurse: true
+   └── 递归扫描子目录中的 YAML 文件
+   
+3. 修复镜像 tag 不匹配
+   └── 确保 deployment 中的镜像 tag 与 Harbor 一致
+   
+4. 修复健康检查配置
+   └── web-service 使用 TCP 探针替代 HTTP 探针
+   
+5. 验证服务可用
+   └── curl http://182.42.82.135:30888/api/user/1
+```
+
+---
+
+### CI/CD 完整流程
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        完整 CI/CD 流程                               │
+│                                                                     │
+│  开发者                                                              │
+│    │                                                                │
+│    ▼                                                                │
+│  推送代码到 Gitee ─────────────────────────────────────┐            │
+│    │                                                   │            │
+│    │ (手动触发)                                        │ (自动)     │
+│    ▼                                                   ▼            │
+│  Tekton PipelineRun                              ArgoCD 同步        │
+│    │                                                   │            │
+│    ├── git-clone Task                                  │            │
+│    │   └── 从 Gitee 拉取代码                           │            │
+│    │                                                   │            │
+│    └── build-service Task (x4 并行)                    │            │
+│        └── Kaniko 构建镜像                             │            │
+│            └── 推送到 Harbor                           │            │
+│                                                        │            │
+│                                                        ▼            │
+│                                              K8s Deployment 更新    │
+│                                                        │            │
+│                                                        ▼            │
+│                                              服务运行在 K8s 集群     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 当前状态
+
+| 组件 | 状态 | 说明 |
+|------|------|------|
+| Tekton CI | ✅ 完成 | 手动触发，构建 4 个微服务镜像 |
+| Harbor | ✅ 运行中 | 存储所有镜像 |
+| ArgoCD CD | ✅ 完成 | 自动同步 Gitee k8s 配置 |
+| 微服务 | ✅ 运行中 | 4 个服务 + etcd |
+
+### 服务访问
+
+| 服务 | 访问地址 |
+|------|----------|
+| Harbor | http://182.42.82.135:30002 (admin/Harbor12345) |
+| ArgoCD | http://182.42.82.135:30090 (admin/admin123) |
+| Web API | http://182.42.82.135:30888/api/user/1 |
+
+### 验证命令
+
+```bash
+# 检查 CI 状态
+kubectl get pipelineruns,taskruns -n tekton-pipelines
+
+# 检查 CD 状态
+kubectl get applications -n argocd
+
+# 检查服务状态
+kubectl get pods -n service-test
+
+# 测试 API
+curl http://182.42.82.135:30888/api/user/1
+```
+
+
+---
+
+## 2026-01-01 Tekton Triggers 自动触发配置
+
+### 问题 32: EventListener Pod CrashLoopBackOff - RBAC 权限不足
+
+**现象**:
+```
+el-gitee-listener-xxx   0/1   CrashLoopBackOff   195   10h
+```
+
+**日志**:
+```
+interceptors.triggers.tekton.dev is forbidden: User "system:serviceaccount:tekton-pipelines:tekton-triggers-sa" 
+cannot list resource "interceptors" in API group "triggers.tekton.dev"
+```
+
+**原因**: ServiceAccount 缺少 `interceptors` 资源的访问权限
+
+**解决方案**: 在 Role 中添加 `interceptors` 权限
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tekton-triggers-role
+  namespace: tekton-pipelines
+rules:
+- apiGroups: ["triggers.tekton.dev"]
+  resources: ["eventlisteners", "triggerbindings", "triggertemplates", "triggers", "interceptors"]  # 添加 interceptors
+  verbs: ["get", "list", "watch"]
+```
+
+---
+
+### 问题 33: ArgoCD Application 不递归扫描子目录
+
+**现象**: Application 同步成功但没有创建任何资源
+
+**原因**: ArgoCD 默认只扫描顶层 YAML 文件
+
+**解决方案**: 添加 `directory.recurse: true`
+
+```yaml
+spec:
+  source:
+    path: k8s
+    directory:
+      recurse: true  # 递归扫描子目录
+```
+
+---
+
+### 问题 34: Harbor 间歇性 502 Bad Gateway 导致构建失败
+
+**现象**:
+```
+error pushing image: HEAD http://182.42.82.135:30002/v2/xxx: unexpected status code 502 Bad Gateway
+```
+
+**原因**: Harbor 在高负载或资源不足时可能短暂不可用
+
+**排查**:
+```bash
+# 检查 Harbor 健康状态
+curl -s http://182.42.82.135:30002/api/v2.0/health
+
+# 检查 Harbor Pod 状态
+kubectl get pods -n devops
+
+# 检查 Harbor 日志
+kubectl logs -n devops -l app=harbor -l component=core --tail=50
+```
+
+**解决方案**:
+1. 增加 Harbor 资源配额
+2. 配置 Harbor 高可用
+3. 失败后重新触发构建
+
+---
+
+## Tekton Triggers 配置总结
+
+### 组件架构
+
+```
+Gitee Webhook
+     │
+     ▼ (HTTP POST)
+EventListener (NodePort 30880)
+     │
+     ├── TriggerBinding (提取参数)
+     │
+     └── TriggerTemplate (创建 PipelineRun)
+            │
+            ▼
+      PipelineRun (自动创建)
+```
+
+### 配置文件清单
+
+| 文件 | 作用 |
+|------|------|
+| `trigger-template.yaml` | 定义触发时创建的 PipelineRun 模板 |
+| `trigger-binding.yaml` | 从 Webhook 请求中提取 git-revision 和 git-repo-url |
+| `event-listener.yaml` | 接收 Webhook 请求，包含 RBAC 配置 |
+| `event-listener-service.yaml` | NodePort Service 暴露 EventListener |
+
+### Gitee Webhook 配置
+
+| 配置项 | 值 |
+|--------|-----|
+| URL | `http://182.42.95.71:30880` (公网地址) |
+| 触发事件 | Push |
+| 密码 | 可选（生产环境建议配置） |
+
+### 验证命令
+
+```bash
+# 检查 Triggers 组件状态
+kubectl get pods -n tekton-pipelines | grep -E "trigger|listener"
+
+# 检查 EventListener Service
+kubectl get svc -n tekton-pipelines | grep listener
+
+# 查看最近的 PipelineRun
+kubectl get pipelineruns -n tekton-pipelines --sort-by=.metadata.creationTimestamp | tail -5
+
+# 查看 TaskRun 状态
+kubectl get taskruns -n tekton-pipelines | grep auto
+```
+
+---
+
+## CI/CD 完整流程验证结果
+
+### 测试时间: 2026-01-01
+
+### 流程验证
+
+| 步骤 | 状态 | 说明 |
+|------|------|------|
+| Git Push | ✅ | 推送代码到 Gitee |
+| Webhook 触发 | ✅ | Gitee 发送 POST 到 EventListener |
+| PipelineRun 创建 | ✅ | Tekton 自动创建 `service-test-auto-xxx` |
+| 镜像构建 | ⚠️ | 部分成功，部分因 Harbor 502 失败 |
+| ArgoCD 同步 | ✅ | 自动同步 k8s 配置 |
+| 服务部署 | ✅ | Pod 正常运行 |
+
+### 已验证的自动化能力
+
+1. **CI 自动触发**: Git push → Webhook → Tekton PipelineRun ✅
+2. **CD 自动同步**: Git push → ArgoCD 自动同步 k8s 配置 ✅
+3. **端到端**: 代码变更 → 自动构建 → 自动部署 ✅
+
+### 待优化项
+
+1. Harbor 稳定性 - 考虑增加资源或配置高可用
+2. 构建重试机制 - 失败后自动重试
+3. Webhook 签名验证 - 生产环境安全加固
+
+
+---
+
+## 2026-01-01 CI/CD 完整流程验证成功
+
+### 最终测试结果
+
+**PipelineRun**: `service-test-auto-9qb76`
+**触发方式**: Git push → Gitee Webhook → Tekton Triggers
+**状态**: ✅ 全部成功
+
+| TaskRun | 状态 | 说明 |
+|---------|------|------|
+| build-product | ✅ Succeeded | 镜像构建并推送成功 |
+| build-trade | ✅ Succeeded | 镜像构建并推送成功 |
+| build-user | ✅ Succeeded | 镜像构建并推送成功 |
+| build-web | ✅ Succeeded | 镜像构建并推送成功 |
+
+### CI/CD 自动化流程验证
+
+```
+✅ Git push 到 Gitee
+    │
+    ▼
+✅ Gitee Webhook 触发 (POST http://182.42.95.71:30880)
+    │
+    ▼
+✅ Tekton EventListener 接收请求
+    │
+    ▼
+✅ TriggerTemplate 自动创建 PipelineRun
+    │
+    ▼
+✅ 4 个 TaskRun 并行执行
+    │
+    ▼
+✅ 镜像推送到 Harbor
+    │
+    ▼
+✅ ArgoCD 自动同步 k8s 配置
+    │
+    ▼
+✅ 服务部署到 K8s 集群
+```
+
+### 关键配置文件
+
+| 文件 | 路径 | 作用 |
+|------|------|------|
+| TriggerTemplate | `02_tekton/triggers/trigger-template.yaml` | 定义 PipelineRun 模板 |
+| TriggerBinding | `02_tekton/triggers/trigger-binding.yaml` | 提取 Webhook 参数 |
+| EventListener | `02_tekton/triggers/event-listener.yaml` | 接收 Webhook + RBAC |
+| NodePort Service | `02_tekton/triggers/event-listener-service.yaml` | 暴露 EventListener |
+| ArgoCD App | `04_argocd/applications/service-test-app.yaml` | CD 配置 |
+
+### 遇到的问题及解决方案汇总
+
+| 问题 | 原因 | 解决方案 |
+|------|------|----------|
+| EventListener CrashLoopBackOff | RBAC 缺少 interceptors 权限 | Role 中添加 interceptors 资源 |
+| ArgoCD 不创建资源 | 不递归扫描子目录 | 添加 `directory.recurse: true` |
+| Harbor 502 Bad Gateway | Harbor 组件短暂不可用 | 等待恢复后重试 |
+| web-service CrashLoopBackOff | /health 端点不存在 | 改用 TCP 探针 |
+| 镜像 tag 不匹配 | Gitee 配置与 Harbor 不一致 | 统一使用 :v1 tag |
+
+### 完整 CI/CD 平台组件状态
+
+| 组件 | 状态 | 说明 |
+|------|------|------|
+| Tekton Pipeline | ✅ | CI 构建流水线 |
+| Tekton Triggers | ✅ | Webhook 自动触发 |
+| Harbor | ✅ | 镜像仓库 |
+| ArgoCD | ✅ | GitOps CD |
+| Gitee Webhook | ✅ | 代码推送触发 |
+| K8s 服务 | ✅ | 4 个微服务运行中 |
+
+### 验证命令
+
+```bash
+# 检查最近的 PipelineRun
+kubectl get pipelineruns -n tekton-pipelines --sort-by=.metadata.creationTimestamp | tail -5
+
+# 检查 TaskRun 状态
+kubectl get taskruns -n tekton-pipelines | grep auto
+
+# 检查服务状态
+kubectl get pods -n service-test
+
+# 测试 API
+curl http://182.42.82.135:30888/api/user/1
+```
+
+---
+
+## 总结
+
+### 已完成的 CI/CD 能力
+
+1. **代码推送自动触发 CI**: Git push → Gitee Webhook → Tekton Triggers → PipelineRun
+2. **并行构建多服务**: 4 个微服务同时构建，提高效率
+3. **镜像自动推送**: Kaniko 构建后自动推送到 Harbor
+4. **GitOps 自动部署**: ArgoCD 监听 Git 仓库，自动同步 K8s 配置
+5. **端到端自动化**: 代码变更 → 自动构建 → 自动部署，无需人工干预
+
+### 待优化项
+
+1. **Harbor 高可用**: 当前单实例，建议配置高可用
+2. **构建缓存**: 配置 Kaniko 缓存加速构建
+3. **Webhook 签名验证**: 生产环境建议配置
+4. **监控告警**: 部署 Prometheus + Grafana
+5. **渐进式发布**: 部署 Argo Rollouts 实现金丝雀发布
