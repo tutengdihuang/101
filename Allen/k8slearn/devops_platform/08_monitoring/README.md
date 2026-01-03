@@ -10,13 +10,12 @@
 |------|------|------|
 | Helm Chart | ✅ 已安装 | kube-prometheus-stack v72.6.2 |
 | Node Exporter | ✅ 运行中 | 3/3 节点已部署 |
-| 镜像拉取 | ✅ 已完成 | 本地已拉取所有镜像 |
-| 镜像上传 | ✅ 已完成 | 已上传到 master/worker1/worker2 |
-| 镜像导入 | ⏳ 进行中 | master 已导入，worker 待导入 |
-| Prometheus Operator | ⏳ 待启动 | 等待镜像导入 |
-| Grafana | ⏳ 待启动 | 等待镜像导入 |
-| kube-state-metrics | ⏳ 待启动 | 等待镜像导入 |
-| AlertManager | ⏳ 暂不启用 | 告警通知 |
+| Prometheus Operator | ✅ 运行中 | 1/1 副本 |
+| Grafana | ✅ 运行中 | 1/1 副本 |
+| kube-state-metrics | ✅ 运行中 | 1/1 副本 |
+| Prometheus | ✅ 运行中 | 1/1 副本 |
+| 所有镜像 | ✅ 已导入 | 使用华为云 x86_64 镜像 |
+| 访问测试 | ✅ 正常 | Grafana 和 Prometheus 可访问 |
 
 ---
 
@@ -224,6 +223,220 @@ prometheus-prometheus-kube-prometheus-prometheus-0       2/2     Running   0    
 
 ---
 
+## 故障排查
+
+### 问题 1: Pod 处于 CrashLoopBackOff 状态
+
+**症状**: Pod 不断重启，状态为 CrashLoopBackOff
+
+**可能原因**:
+1. 镜像架构不匹配（arm64 镜像运行在 x86_64 节点上）
+2. 配置错误
+3. 资源不足
+
+**排查步骤**:
+```bash
+# 查看 Pod 状态
+kubectl get pods -n monitoring
+
+# 查看 Pod 日志
+kubectl logs <pod-name> -n monitoring
+
+# 查看事件
+kubectl describe pod <pod-name> -n monitoring
+```
+
+**解决方案**:
+- 检查镜像架构是否匹配节点架构
+- 使用正确的镜像源（华为云 x86_64 镜像）
+
+---
+
+### 问题 2: exec format error
+
+**症状**: Pod 日志显示 `exec /bin/prometheus: exec format error`
+
+**原因**: 镜像架构与节点架构不匹配
+
+**排查**:
+```bash
+# 查看节点架构
+kubectl get nodes -o wide
+
+# 查看镜像架构
+docker inspect <image> | grep Architecture
+```
+
+**解决方案**:
+使用华为云 x86_64 镜像替换原始镜像：
+
+```yaml
+# values.yaml 配置示例
+prometheus:
+  prometheusSpec:
+    image:
+      registry: swr.cn-north-4.myhuaweicloud.com
+      repository: ddn-k8s/quay.io/prometheus/prometheus
+      tag: v3.2.1
+
+grafana:
+  image:
+    registry: swr.cn-north-4.myhuaweicloud.com
+    repository: ddn-k8s/docker.io/grafana/grafana
+    tag: "10.4.2"
+
+prometheusOperator:
+  image:
+    registry: swr.cn-north-4.myhuaweicloud.com
+    repository: ddn-k8s/quay.io/prometheus-operator/prometheus-operator
+    tag: v0.82.2
+```
+
+---
+
+### 问题 3: ImagePullBackOff 错误
+
+**症状**: Pod 状态为 ImagePullBackOff
+
+**原因**:
+1. 镜像路径错误
+2. 镜像不存在
+3. 网络问题
+
+**排查**:
+```bash
+# 查看 Pod 详情
+kubectl describe pod <pod-name> -n monitoring
+
+# 检查镜像是否存在
+docker pull <image>
+```
+
+**解决方案**:
+1. 使用正确的镜像路径
+2. 提前拉取镜像到所有节点
+3. 使用国内镜像源（华为云）
+
+```bash
+# 在所有节点提前拉取镜像
+# Master 节点
+docker pull swr.cn-north-4.myhuaweicloud.com/ddn-k8s/quay.io/prometheus/prometheus:v3.2.1
+
+# Worker 节点（使用 containerd）
+crictl --runtime-endpoint=unix:///run/containerd/containerd.sock pull swr.cn-north-4.myhuaweicloud.com/ddn-k8s/quay.io/prometheus/prometheus:v3.2.1
+```
+
+---
+
+### 问题 4: TLS secret not found
+
+**症状**: Prometheus Operator 启动失败，日志显示 `secret "prometheus-kube-prometheus-admission" not found`
+
+**原因**: TLS 配置启用但缺少 secret
+
+**解决方案**:
+在 values.yaml 中禁用 TLS：
+
+```yaml
+prometheusOperator:
+  tls:
+    enabled: false
+```
+
+然后重新部署：
+```bash
+helm upgrade prometheus prometheus-community/kube-prometheus-stack \
+  -n monitoring \
+  -f values.yaml
+```
+
+---
+
+### 问题 5: Grafana sidecar 容器失败
+
+**症状**: Grafana Pod 中 sidecar 容器不断重启
+
+**原因**: sidecar 镜像架构不匹配或配置问题
+
+**解决方案**:
+在 values.yaml 中禁用 sidecar：
+
+```yaml
+grafana:
+  sidecar:
+    dashboards:
+      enabled: false
+    datasources:
+      enabled: false
+```
+
+---
+
+### 问题 6: Helm repo not found
+
+**症状**: 执行 helm install 时报错 `Error: repo "prometheus-community" not found`
+
+**原因**: Helm 仓库未添加
+
+**解决方案**:
+```bash
+# 添加 Helm 仓库
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+
+# 更新仓库
+helm repo update
+```
+
+---
+
+### 问题 7: kube-state-metrics ImagePullBackOff
+
+**症状**: kube-state-metrics Pod 无法拉取镜像
+
+**原因**: 原始镜像路径 `registry.k8s.io` 在国内无法访问
+
+**解决方案**:
+使用华为云镜像源：
+
+```yaml
+kube-state-metrics:
+  image:
+    registry: swr.cn-north-4.myhuaweicloud.com
+    repository: ddn-k8s/registry.k8s.io/kube-state-metrics/kube-state-metrics
+    tag: v2.15.0
+```
+
+---
+
+## 镜像架构问题总结
+
+### 问题背景
+集群节点为 x86_64 架构，但部分默认镜像为 arm64 架构，导致 `exec format error`。
+
+### 受影响的组件
+1. Grafana (grafana/grafana:11.5.2)
+2. Prometheus Operator (quay.io/prometheus-operator/prometheus-operator:v0.82.2)
+3. Prometheus (quay.io/prometheus/prometheus:v3.2.1)
+4. k8s-sidecar (quay.io/kiwigrid/k8s-sidecar:1.30.3)
+
+### 解决方案
+使用华为云 x86_64 镜像源：
+
+| 组件 | 原始镜像 | 华为云 x86_64 镜像 |
+|------|---------|-------------------|
+| Grafana | grafana/grafana:11.5.2 | swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/grafana/grafana:10.4.2 |
+| Prometheus Operator | quay.io/prometheus-operator/prometheus-operator:v0.82.2 | swr.cn-north-4.myhuaweicloud.com/ddn-k8s/quay.io/prometheus-operator/prometheus-operator:v0.82.2 |
+| Prometheus | quay.io/prometheus/prometheus:v3.2.1 | swr.cn-north-4.myhuaweicloud.com/ddn-k8s/quay.io/prometheus/prometheus:v3.2.1 |
+| kube-state-metrics | registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.15.0 | swr.cn-north-4.myhuaweicloud.com/ddn-k8s/registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.15.0 |
+
+### 部署流程
+1. 修改 values.yaml，使用华为云镜像
+2. 在所有节点提前拉取镜像
+3. 执行 helm upgrade 更新部署
+4. 等待 Pod 启动并验证状态
+
+---
+
 ## 常用命令
 
 ```bash
@@ -240,8 +453,17 @@ kubectl port-forward svc/prometheus-kube-prometheus-prometheus 9090:9090 -n moni
 # 重启 Grafana
 kubectl rollout restart deployment prometheus-grafana -n monitoring
 
+# 查看 Pod 日志
+kubectl logs <pod-name> -n monitoring
+
+# 查看 Pod 事件
+kubectl describe pod <pod-name> -n monitoring
+
 # 卸载
 helm uninstall prometheus -n monitoring
+
+# 获取 Grafana 密码
+kubectl get secret -n monitoring prometheus-grafana -o jsonpath="{.data.admin-password}" | base64 -d
 ```
 
 ---
@@ -258,11 +480,11 @@ helm uninstall prometheus -n monitoring
 ## 进度
 
 1. ✅ 安装 kube-prometheus-stack (Helm Chart)
-2. ✅ 本地拉取镜像（代理 + 华为云镜像源）
-3. ✅ 上传镜像到所有节点
-4. ⏳ 导入镜像到 worker 节点
-5. ⏳ 验证 Pod 运行状态
-6. ⏳ 验证 Grafana 访问
+2. ✅ 解决镜像架构问题（使用华为云 x86_64 镜像）
+3. ✅ 解决 TLS secret 问题
+4. ✅ 解决 sidecar 容器问题
+5. ✅ 所有 Pod 正常运行
+6. ✅ Grafana 和 Prometheus 可访问
 7. ⏳ 配置 DevOps 组件 ServiceMonitor（可选）
 8. ⏳ 导入自定义 Dashboard（可选）
 9. ⏳ 配置告警规则（可选）

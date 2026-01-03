@@ -9,19 +9,23 @@ prometheusOperator:
   
   # 使用 quay.io 镜像
   image:
-    registry: quay.io
-    repository: prometheus-operator/prometheus-operator
+    registry: swr.cn-north-4.myhuaweicloud.com
+    repository: ddn-k8s/quay.io/prometheus-operator/prometheus-operator
     tag: v0.82.2
   
   # 禁用 admission webhook（避免镜像拉取问题）
   admissionWebhooks:
     enabled: false
   
+  # 禁用 TLS
+  tls:
+    enabled: false
+  
   # prometheusConfigReloader 镜像
   prometheusConfigReloader:
     image:
-      registry: quay.io
-      repository: prometheus-operator/prometheus-config-reloader
+      registry: swr.cn-north-4.myhuaweicloud.com
+      repository: ddn-k8s/quay.io/prometheus-operator/prometheus-config-reloader
       tag: v0.82.2
   
   resources:
@@ -41,8 +45,9 @@ grafana:
   
   # Docker Hub 镜像
   image:
-    repository: grafana/grafana
-    tag: "11.5.2"
+    registry: swr.cn-north-4.myhuaweicloud.com
+    repository: ddn-k8s/docker.io/grafana/grafana
+    tag: "10.4.2"
   
   service:
     type: NodePort
@@ -61,12 +66,13 @@ grafana:
   
   sidecar:
     image:
-      repository: quay.io/kiwigrid/k8s-sidecar
+      registry: quay.io
+      repository: kiwigrid/k8s-sidecar
       tag: 1.30.3
     dashboards:
-      enabled: true
+      enabled: false
     datasources:
-      enabled: true
+      enabled: false
 
 # ============================================
 # Prometheus 配置
@@ -81,8 +87,8 @@ prometheus:
   prometheusSpec:
     # quay.io 镜像
     image:
-      registry: quay.io
-      repository: prometheus/prometheus
+      registry: swr.cn-north-4.myhuaweicloud.com
+      repository: ddn-k8s/quay.io/prometheus/prometheus
       tag: v3.2.1
     
     retention: 7d
@@ -136,11 +142,11 @@ kubeStateMetrics:
   enabled: true
 
 kube-state-metrics:
-  # 使用 Docker Hub 上的镜像
+  # 使用华为云镜像
   image:
-    registry: docker.io
-    repository: bitnami/kube-state-metrics
-    tag: 2.15.0
+    registry: swr.cn-north-4.myhuaweicloud.com
+    repository: ddn-k8s/registry.k8s.io/kube-state-metrics/kube-state-metrics
+    tag: v2.15.0
   
   resources:
     requests:
