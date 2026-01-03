@@ -1,0 +1,212 @@
+# kube-prometheus-stack Helm Values
+# 轻量化配置 + 使用可访问的镜像源
+
+# ============================================
+# Prometheus Operator 配置
+# ============================================
+prometheusOperator:
+  enabled: true
+  
+  # 使用 quay.io 镜像
+  image:
+    registry: quay.io
+    repository: prometheus-operator/prometheus-operator
+    tag: v0.82.2
+  
+  # 禁用 admission webhook（避免镜像拉取问题）
+  admissionWebhooks:
+    enabled: false
+  
+  # prometheusConfigReloader 镜像
+  prometheusConfigReloader:
+    image:
+      registry: quay.io
+      repository: prometheus-operator/prometheus-config-reloader
+      tag: v0.82.2
+  
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 100m
+    limits:
+      memory: 256Mi
+      cpu: 200m
+
+# ============================================
+# Grafana 配置
+# ============================================
+grafana:
+  enabled: true
+  adminPassword: "admin123"
+  
+  # Docker Hub 镜像
+  image:
+    repository: grafana/grafana
+    tag: "11.5.2"
+  
+  service:
+    type: NodePort
+    nodePort: 30300
+  
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 100m
+    limits:
+      memory: 512Mi
+      cpu: 300m
+  
+  defaultDashboardsEnabled: true
+  defaultDashboardsTimezone: "Asia/Shanghai"
+  
+  sidecar:
+    image:
+      repository: quay.io/kiwigrid/k8s-sidecar
+      tag: 1.30.3
+    dashboards:
+      enabled: true
+    datasources:
+      enabled: true
+
+# ============================================
+# Prometheus 配置
+# ============================================
+prometheus:
+  enabled: true
+  
+  service:
+    type: NodePort
+    nodePort: 30909
+  
+  prometheusSpec:
+    # quay.io 镜像
+    image:
+      registry: quay.io
+      repository: prometheus/prometheus
+      tag: v3.2.1
+    
+    retention: 7d
+    
+    resources:
+      requests:
+        memory: 512Mi
+        cpu: 200m
+      limits:
+        memory: 1Gi
+        cpu: 500m
+    
+    storageSpec: {}
+    
+    scrapeInterval: 30s
+    evaluationInterval: 30s
+    
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+
+# ============================================
+# AlertManager 配置（禁用）
+# ============================================
+alertmanager:
+  enabled: false
+
+# ============================================
+# Node Exporter 配置
+# ============================================
+nodeExporter:
+  enabled: true
+
+prometheus-node-exporter:
+  image:
+    registry: quay.io
+    repository: prometheus/node-exporter
+    tag: v1.9.0
+  
+  resources:
+    requests:
+      memory: 50Mi
+      cpu: 50m
+    limits:
+      memory: 100Mi
+      cpu: 100m
+
+# ============================================
+# kube-state-metrics 配置
+# ============================================
+kubeStateMetrics:
+  enabled: true
+
+kube-state-metrics:
+  # 使用 Docker Hub 上的镜像
+  image:
+    registry: docker.io
+    repository: bitnami/kube-state-metrics
+    tag: 2.15.0
+  
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 50m
+    limits:
+      memory: 128Mi
+      cpu: 100m
+
+# ============================================
+# 其他组件
+# ============================================
+kubeApiServer:
+  enabled: true
+
+kubelet:
+  enabled: true
+
+kubeControllerManager:
+  enabled: false
+
+kubeScheduler:
+  enabled: false
+
+kubeProxy:
+  enabled: true
+
+kubeEtcd:
+  enabled: false
+
+# ============================================
+# 默认告警规则（精简版）
+# ============================================
+defaultRules:
+  create: true
+  rules:
+    alertmanager: false
+    etcd: false
+    configReloaders: false
+    general: true
+    k8s: true
+    kubeApiserverAvailability: false
+    kubeApiserverBurnrate: false
+    kubeApiserverHistogram: false
+    kubeApiserverSlos: false
+    kubeControllerManager: false
+    kubelet: true
+    kubeProxy: false
+    kubePrometheusGeneral: true
+    kubePrometheusNodeRecording: true
+    kubernetesApps: true
+    kubernetesResources: true
+    kubernetesStorage: true
+    kubernetesSystem: true
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+    kubeStateMetrics: true
+    network: false
+    node: true
+    nodeExporterAlerting: true
+    nodeExporterRecording: true
+    prometheus: true
+    prometheusOperator: false
+
+# ============================================
+# Thanos（禁用）
+# ============================================
+thanosRuler:
+  enabled: false

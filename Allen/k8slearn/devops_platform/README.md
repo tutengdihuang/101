@@ -4,7 +4,7 @@
 
 ## 当前进度
 
-**更新时间**: 2026-01-01
+**更新时间**: 2026-01-02
 
 ### 已完成
 - ✅ Harbor 镜像仓库 (devops namespace) - `http://182.42.82.135:30002`
@@ -29,7 +29,7 @@
 | `library/alpine` | latest | ✅ |
 
 ### 待部署
-- 🔧 Argo Rollouts (金丝雀/蓝绿发布) - **配置已就绪，待安装**
+- ✅ Argo Rollouts (金丝雀/蓝绿发布) - **v1.8.3 已安装，待配置 Rollout**
 - ⏳ Prometheus + Grafana (监控)
 - ⏳ SonarQube (代码扫描)
 - ⏳ Trivy (镜像扫描)
@@ -73,7 +73,7 @@
 | **ArgoCD** | CD：GitOps 部署 | ✅ 已部署 | `http://182.42.82.135:30090` |
 | **Tekton** | CI：构建、推送镜像 | ✅ 已完成 | - |
 | **Tekton Triggers** | CI 自动触发 | ✅ 已完成 | `http://182.42.95.71:30880` |
-| **Argo Rollouts** | 金丝雀/蓝绿发布 | ⏳ 待部署 | - |
+| **Argo Rollouts** | 金丝雀/蓝绿发布 | ✅ 已安装 | v1.8.3 |
 | **SonarQube** | 代码质量扫描 | ⏳ 待部署 | - |
 | **Trivy** | 镜像漏洞扫描 | ⏳ 待部署 | - |
 | **Prometheus** | 监控指标收集 | ⏳ 待部署 | - |
@@ -269,5 +269,6 @@ curl http://182.42.82.135:30888/api/user/1
 2. ~~Tekton Triggers 自动触发~~ ✅
 3. ~~ArgoCD Application 配置~~ ✅
 4. ~~完整 CI/CD 流程验证~~ ✅
-5. **安装 Argo Rollouts 实现金丝雀发布** ← 当前
-6. 部署 Prometheus + Grafana 监控
+5. **安装 Argo Rollouts 实现金丝雀发布** ✅ 已安装
+6. **部署 Rollout 配置** ← 当前
+7. 部署 Prometheus + Grafana 监控
