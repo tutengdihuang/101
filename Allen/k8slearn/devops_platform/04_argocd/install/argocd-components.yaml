@@ -64,7 +64,9 @@ spec:
         command: [argocd-repo-server]
         ports:
         - containerPort: 8081
+          name: server
         - containerPort: 8084
+          name: metrics
         env:
         - name: ARGOCD_RECONCILIATION_TIMEOUT
           value: "180s"
@@ -97,6 +99,8 @@ kind: Service
 metadata:
   name: argocd-repo-server
   namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-repo-server
 spec:
   ports:
   - name: server
@@ -140,6 +144,7 @@ spec:
         - "10"
         ports:
         - containerPort: 8082
+          name: metrics
         env:
         - name: ARGOCD_RECONCILIATION_TIMEOUT
           value: "180s"
@@ -156,9 +161,12 @@ kind: Service
 metadata:
   name: argocd-application-controller
   namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-application-controller
 spec:
   ports:
-  - port: 8082
+  - name: metrics
+    port: 8082
     targetPort: 8082
   selector:
     app.kubernetes.io/name: argocd-application-controller
@@ -193,6 +201,7 @@ spec:
         ports:
         - containerPort: 8080
         - containerPort: 8083
+          name: metrics
         env:
         - name: ARGOCD_SERVER_INSECURE
           value: "true"
@@ -227,6 +236,8 @@ kind: Service
 metadata:
   name: argocd-server
   namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-server
 spec:
   type: NodePort
   ports:
@@ -238,5 +249,8 @@ spec:
     port: 443
     targetPort: 8080
     nodePort: 30091
+  - name: metrics
+    port: 8083
+    targetPort: 8083
   selector:
     app.kubernetes.io/name: argocd-server

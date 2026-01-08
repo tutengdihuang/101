@@ -4,7 +4,7 @@
 
 ## 当前进度
 
-**更新时间**: 2026-01-02
+**更新时间**: 2026-01-03
 
 ### 已完成
 - ✅ Harbor 镜像仓库 (devops namespace) - `http://182.42.82.135:30002`
@@ -16,6 +16,10 @@
 - ✅ CI Pipeline 完成 - 4 个微服务镜像构建成功
 - ✅ ArgoCD Application 配置 (CD 部署) - 4 个微服务自动部署成功
 - ✅ **完整 CI/CD 自动化流程验证通过**
+- ✅ **Prometheus + Grafana 监控系统部署完成**
+- ✅ **Tekton ServiceMonitor 配置完成**
+- ✅ **ArgoCD ServiceMonitor 配置完成**
+- ✅ **DevOps Overview Dashboard 导入完成**
 
 ### Harbor 中的镜像
 | 镜像 | Tag | 状态 |
@@ -30,7 +34,6 @@
 
 ### 待部署
 - ✅ Argo Rollouts (金丝雀/蓝绿发布) - **v1.8.3 已安装，待配置 Rollout**
-- ⏳ Prometheus + Grafana (监控)
 - ⏳ SonarQube (代码扫描)
 - ⏳ Trivy (镜像扫描)
 
@@ -59,7 +62,10 @@
 │                              ▼                                           │
 │                      Argo Rollouts (金丝雀/蓝绿) [待部署]                 │
 │                                                                          │
-│  监控: Prometheus/Grafana [待部署]                                        │
+│  监控: Prometheus/Grafana ✅                                              │
+│    ├── ServiceMonitor: Tekton, ArgoCD                                    │
+│    └── Dashboard: DevOps Overview                                       │
+│                                                                          │
 │  安全: SonarQube + Trivy [待部署]                                         │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -74,10 +80,10 @@
 | **Tekton** | CI：构建、推送镜像 | ✅ 已完成 | - |
 | **Tekton Triggers** | CI 自动触发 | ✅ 已完成 | `http://182.42.95.71:30880` |
 | **Argo Rollouts** | 金丝雀/蓝绿发布 | ✅ 已安装 | v1.8.3 |
+| **Prometheus** | 监控指标收集 | ✅ 已部署 | `http://182.42.82.135:30900` |
+| **Grafana** | 监控可视化 | ✅ 已部署 | `http://182.42.82.135:30300` |
 | **SonarQube** | 代码质量扫描 | ⏳ 待部署 | - |
 | **Trivy** | 镜像漏洞扫描 | ⏳ 待部署 | - |
-| **Prometheus** | 监控指标收集 | ⏳ 待部署 | - |
-| **Grafana** | 监控可视化 | ⏳ 待部署 | - |
 
 ## 目录结构
 
@@ -140,6 +146,35 @@ devops_platform/
 | **密码** | admin123 |
 | **Application** | service-test (自动同步 Gitee k8s 目录) |
 
+### 监控系统
+
+| 项目 | 值 |
+|------|-----|
+| **命名空间** | monitoring |
+| **Prometheus** | `http://182.42.82.135:30900` |
+| **Grafana** | `http://182.42.82.135:30300` (admin/admin123) |
+| **Helm Chart** | kube-prometheus-stack v72.6.2 |
+| **ServiceMonitor** | Tekton, ArgoCD |
+| **Dashboard** | DevOps Overview (ID: 1) |
+
+**监控范围**:
+- 基础设施: Node CPU/内存/磁盘使用率、Pod 状态、网络流量
+- DevOps 组件: Tekton Pipeline 执行、ArgoCD 同步状态
+- 业务应用: service-test 微服务指标
+
+**ServiceMonitor 配置**:
+- [Tekton ServiceMonitor](./08_monitoring/servicemonitors/tekton-servicemonitor.yaml) - 监控 Tekton Pipeline Controller
+- [ArgoCD ServiceMonitor](./08_monitoring/servicemonitors/argocd-servicemonitor.yaml) - 监控 ArgoCD Application Controller 和 Repo Server
+
+**Grafana Dashboard**:
+- [DevOps Overview](./08_monitoring/dashboards/devops-overview.json) - DevOps 平台概览
+  - Tekton Pipeline Duration
+  - ArgoCD Application Sync Status
+  - Cluster CPU/Memory Usage
+  - Node CPU/Memory Usage
+
+详细文档: [08_monitoring/README.md](./08_monitoring/README.md)
+
 ### Harbor
 
 | 项目 | 值 |
@@ -170,9 +205,12 @@ devops_platform/
 ├── ArgoCD Application 配置 ✅
 └── 自动同步验证 ✅
 
-阶段 4: 监控 (待部署)
-├── Prometheus
-└── Grafana
+阶段 4: 监控 ✅
+├── Prometheus ✅
+├── Grafana ✅
+├── Tekton ServiceMonitor ✅
+├── ArgoCD ServiceMonitor ✅
+└── DevOps Overview Dashboard ✅
 
 阶段 5: 安全扫描 (待部署)
 ├── SonarQube
@@ -252,6 +290,18 @@ curl -s -u admin:Harbor12345 http://182.42.82.135:30002/api/v2.0/projects/servic
 # === 服务相关 ===
 kubectl get pods -n service-test
 curl http://182.42.82.135:30888/api/user/1
+
+# === 监控相关 ===
+# 查看 Prometheus/Grafana 状态
+kubectl get pods -n monitoring
+kubectl get servicemonitor -n monitoring
+
+# 查看 Prometheus targets
+kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090 --address 0.0.0.0 &
+# 访问 http://182.42.82.135:9090/targets
+
+# 查看 Grafana dashboards
+curl -s http://admin:admin123@182.42.82.135:30300/api/search?query= | jq
 ```
 
 ## 服务访问
@@ -262,6 +312,8 @@ curl http://182.42.82.135:30888/api/user/1
 | ArgoCD | http://182.42.82.135:30090 | admin/admin123 |
 | Tekton Webhook | http://182.42.95.71:30880 | Gitee Webhook 地址 |
 | Web API | http://182.42.82.135:30888 | 微服务 API 入口 |
+| Prometheus | http://182.42.82.135:30900 | 监控指标查询 |
+| Grafana | http://182.42.82.135:30300 | admin/admin123 |
 
 ## 下一步
 
@@ -269,6 +321,8 @@ curl http://182.42.82.135:30888/api/user/1
 2. ~~Tekton Triggers 自动触发~~ ✅
 3. ~~ArgoCD Application 配置~~ ✅
 4. ~~完整 CI/CD 流程验证~~ ✅
-5. **安装 Argo Rollouts 实现金丝雀发布** ✅ 已安装
+5. ~~安装 Argo Rollouts 实现金丝雀发布~~ ✅ 已安装
 6. **部署 Rollout 配置** ← 当前
-7. 部署 Prometheus + Grafana 监控
+7. ~~部署 Prometheus + Grafana 监控~~ ✅ 已完成
+8. 配置 SonarQube 代码质量扫描
+9. 配置 Trivy 镜像漏洞扫描

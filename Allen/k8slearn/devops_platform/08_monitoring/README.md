@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-**更新时间**: 2026-01-03
+**更新时间**: 2026-01-04
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
@@ -14,8 +14,15 @@
 | Grafana | ✅ 运行中 | 1/1 副本 |
 | kube-state-metrics | ✅ 运行中 | 1/1 副本 |
 | Prometheus | ✅ 运行中 | 1/1 副本 |
+| AlertManager | ✅ 运行中 | 1/1 副本，NodePort 30903 |
 | 所有镜像 | ✅ 已导入 | 使用华为云 x86_64 镜像 |
-| 访问测试 | ✅ 正常 | Grafana 和 Prometheus 可访问 |
+| 访问测试 | ✅ 正常 | Grafana、Prometheus 和 AlertManager 可访问 |
+| Tekton ServiceMonitor | ✅ 已部署 | 监控 Tekton Pipeline |
+| ArgoCD ServiceMonitor | ✅ 已部署 | 监控 ArgoCD 应用 |
+| DevOps Dashboard | ✅ 已导入 | Grafana Dashboard ID: 1 |
+| CI/CD 告警规则 | ✅ 已部署 | Tekton 和 ArgoCD 告警规则 |
+| 基础设施告警规则 | ✅ 已部署 | 节点和 Pod 告警规则 |
+| 验证系统 | ✅ 已完成 | 所有验证项通过（7/7） |
 
 ---
 
@@ -166,6 +173,7 @@ prometheus-prometheus-kube-prometheus-prometheus-0       2/2     Running   0    
 |------|------|------|
 | Grafana | http://<MASTER_IP>:30300 | admin / admin123 |
 | Prometheus | http://<MASTER_IP>:30909 | 指标查询 |
+| AlertManager | http://<MASTER_IP>:30903 | 告警管理 |
 
 ---
 
@@ -174,20 +182,26 @@ prometheus-prometheus-kube-prometheus-prometheus-0       2/2     Running   0    
 ```
 08_monitoring/
 ├── README.md                    # 本文档
+├── VERIFICATION.md              # 验证文档
 ├── DESIGN.md                    # 设计方案
+├── troubleshooting.md           # 故障排查指南
 │
 ├── install/
-│   ├── values.yaml              # Helm values 配置
-│   └── install.sh               # 安装脚本
+│   ├── values.yaml              # Helm values 配置（包含 AlertManager 配置）
+│   ├── install.sh               # 安装脚本
+│   ├── cicd-alerting-rules.yaml # CI/CD 告警规则
+│   └── infrastructure-alerting-rules.yaml # 基础设施告警规则
 │
 ├── servicemonitors/             # ServiceMonitor 配置
 │   ├── tekton-servicemonitor.yaml
 │   ├── argocd-servicemonitor.yaml
 │   └── harbor-servicemonitor.yaml
 │
-└── dashboards/                  # 自定义 Dashboard
-    ├── devops-overview.json
-    └── service-test.json
+├── dashboards/                  # 自定义 Dashboard
+│   ├── devops-overview.json
+│   └── service-test.json
+│
+└── verify-monitoring.sh         # 一键验证脚本
 ```
 
 ---
@@ -208,6 +222,219 @@ prometheus-prometheus-kube-prometheus-prometheus-0       2/2     Running   0    
 ### 业务应用
 - service-test 微服务指标
 
+### 告警规则
+- CI/CD 告警：Tekton Pipeline 失败、ArgoCD 应用异常
+- 基础设施告警：节点资源使用率过高、Pod 异常状态
+
+---
+
+## ServiceMonitor 配置
+
+### Tekton ServiceMonitor
+
+**文件**: [servicemonitors/tekton-servicemonitor.yaml](./servicemonitors/tekton-servicemonitor.yaml)
+
+监控 Tekton Pipeline Controller 的指标：
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: tekton-servicemonitor
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - tekton-pipelines
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: controller
+      app.kubernetes.io/instance: default
+      app.kubernetes.io/name: controller
+      app.kubernetes.io/part-of: tekton-pipelines
+  endpoints:
+    - port: http-metrics
+      interval: 30s
+      path: /metrics
+```
+
+**部署**:
+```bash
+kubectl apply -f servicemonitors/tekton-servicemonitor.yaml
+```
+
+**验证**:
+```bash
+kubectl get servicemonitor tekton-servicemonitor -n monitoring
+```
+
+### ArgoCD ServiceMonitor
+
+**文件**: [servicemonitors/argocd-servicemonitor.yaml](./servicemonitors/argocd-servicemonitor.yaml)
+
+监控 ArgoCD Application Controller、Repo Server 和 Server 的指标：
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: argocd-application-controller-servicemonitor
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - argocd
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-application-controller
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: argocd-repo-server-servicemonitor
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - argocd
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-repo-server
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: argocd-server-servicemonitor
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - argocd
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-server
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
+```
+
+**部署**:
+```bash
+kubectl apply -f servicemonitors/argocd-servicemonitor.yaml
+```
+
+**验证**:
+```bash
+kubectl get servicemonitor -n monitoring | grep argocd
+```
+
+**预期输出**:
+```
+NAME                                                 AGE
+argocd-application-controller-servicemonitor        5m
+argocd-repo-server-servicemonitor                    5m
+argocd-server-servicemonitor                         5m
+```
+
+**重要提示**:
+- ServiceMonitor 必须使用端口名称而非端口号
+- 确保 ArgoCD Services 的端口名称与 ServiceMonitor 中指定的端口名称匹配
+- 确保 ArgoCD Services 的标签与 ServiceMonitor 的 selector 匹配
+
+### 验证 Prometheus Targets
+
+```bash
+# 端口转发 Prometheus
+kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090 --address 0.0.0.0 &
+
+# 访问 http://<MASTER_IP>:9090/targets
+# 应该看到 tekton-servicemonitor 和 argocd-servicemonitor 的 targets
+```
+
+---
+
+## Grafana Dashboard
+
+### DevOps Platform Overview
+
+**文件**: [dashboards/devops-overview.json](./dashboards/devops-overview.json)
+
+**Dashboard ID**: 1
+**UID**: devops-overview
+**URL**: http://<MASTER_IP>:30300/d/devops-overview/devops-platform-overview
+
+**包含的面板**:
+1. **Tekton Pods** - Tekton 命名空间中的 Pod 数量
+2. **ArgoCD Pods** - ArgoCD 命名空间中的 Pod 数量
+3. **Cluster CPU Usage** - 集群 CPU 使用率
+4. **Cluster Memory Usage** - 集群内存使用率
+5. **Tekton Pipeline Duration** - Tekton Pipeline 执行时长趋势
+6. **ArgoCD Application Sync Status** - ArgoCD 应用同步状态（成功/失败）
+7. **Node CPU Usage** - 各节点 CPU 使用率
+8. **Node Memory Usage** - 各节点内存使用率
+
+**导入 Dashboard**:
+
+方法一：通过 Grafana UI
+1. 访问 Grafana: http://<MASTER_IP>:30300
+2. 登录 (admin / admin123)
+3. 点击 "+" -> "Import dashboard"
+4. 上传 JSON 文件或粘贴 JSON 内容
+5. 点击 "Load" 然后 "Import"
+
+方法二：通过 API
+```bash
+# 准备导入文件
+python3 << 'PYEOF'
+import json
+
+dashboard_file = "/path/to/dashboards/devops-overview.json"
+output_file = "/tmp/grafana-dashboard-import.json"
+
+with open(dashboard_file, 'r') as f:
+    dashboard = json.load(f)
+
+import_data = {
+    "dashboard": dashboard,
+    "overwrite": True,
+    "message": "Imported DevOps Overview Dashboard"
+}
+
+with open(output_file, 'w') as f:
+    json.dump(import_data, f, indent=2)
+PYEOF
+
+# 导入到 Grafana
+curl -X POST -H "Content-Type: application/json" \
+  -d @/tmp/grafana-dashboard-import.json \
+  http://admin:admin123@<MASTER_IP>:30300/api/dashboards/db
+```
+
+**更新 Dashboard**:
+```bash
+# 使用相同的 API 调用，设置 overwrite: true
+curl -X POST -H "Content-Type: application/json" \
+  -d @/tmp/grafana-dashboard-import.json \
+  http://admin:admin123@<MASTER_IP>:30300/api/dashboards/db
+```
+
 ---
 
 ## 内置 Dashboard
@@ -220,6 +447,158 @@ prometheus-prometheus-kube-prometheus-prometheus-0       2/2     Running   0    
 | Kubernetes / Compute Resources / Namespace (Pods) | Pod 资源监控 |
 | Kubernetes / Compute Resources / Node (Pods) | 节点资源监控 |
 | Node Exporter / Nodes | 节点详细指标 |
+
+---
+
+## AlertManager 配置
+
+### 部署 AlertManager
+
+AlertManager 已通过 kube-prometheus-stack Helm Chart 部署，配置在 [install/values.yaml](./install/values.yaml) 中。
+
+**关键配置**:
+- NodePort: 30903
+- 镜像: swr.cn-north-4.myhuaweicloud.com/ddn-k8s/quay.io/prometheus/alertmanager:v0.27.0
+- 数据保留: 120h
+
+### 告警路由规则
+
+AlertManager 配置了基于严重性的告警路由：
+
+| 接收器 | 严重性 | 重复间隔 | 说明 |
+|--------|--------|---------|------|
+| critical-receiver | critical | 1h | 关键告警，快速通知 |
+| warning-receiver | warning | 4h | 警告告警，常规通知 |
+| cicd-receiver | Tekton/ArgoCD | 4h | CI/CD 专用接收器 |
+| default-receiver | 其他 | 4h | 默认接收器 |
+
+### 告警抑制规则
+
+配置了告警抑制规则，避免告警风暴：
+- 当 critical 级别告警触发时，抑制相同 alertname、namespace 和 instance 的 warning 级别告警
+
+### CI/CD 告警规则
+
+**文件**: [install/cicd-alerting-rules.yaml](./install/cicd-alerting-rules.yaml)
+
+**Tekton 告警**:
+- `TektonPipelineRunFailed` - PipelineRun 执行失败
+- `TektonPipelineLongRunning` - Pipeline 执行时间过长（> 30分钟）
+
+**ArgoCD 告警**:
+- `ArgoCDAppDegraded` - 应用健康状态异常
+- `ArgoCDAppSyncFailed` - 应用同步失败
+- `ArgoCDAppOutOfSync` - 应用配置与期望状态不一致
+
+### 基础设施告警规则
+
+**文件**: [install/infrastructure-alerting-rules.yaml](./install/infrastructure-alerting-rules.yaml)
+
+**节点告警**:
+- `NodeHighCPUUsage` - CPU 使用率 > 80%
+- `NodeHighMemoryUsage` - 内存使用率 > 80%
+- `NodeDiskSpaceLow` - 磁盘使用率 > 85%
+
+**Pod 告警**:
+- `PodCrashLoopBackOff` - Pod 处于 CrashLoopBackOff 状态
+- `PodOOMKilled` - Pod 因 OOM 被终止
+- `PodNotReady` - Pod 未就绪超过 10 分钟
+
+### 部署告警规则
+
+```bash
+# 部署 CI/CD 告警规则
+kubectl apply -f install/cicd-alerting-rules.yaml
+
+# 部署基础设施告警规则
+kubectl apply -f install/infrastructure-alerting-rules.yaml
+```
+
+### 验证告警规则
+
+```bash
+# 1. 验证 PrometheusRule 资源
+kubectl get prometheusrules -n monitoring
+
+# 2. 验证规则已加载到 Prometheus
+curl -s http://<MASTER_IP>:30909/api/v1/rules | python3 -m json.tool | grep '"name"'
+
+# 3. 验证 AlertManager 配置
+curl -s http://<MASTER_IP>:30903/api/v2/status | python3 -m json.tool
+
+# 4. 查看 AlertManager 接收器
+curl -s http://<MASTER_IP>:30903/api/v2/status | python3 -m json.tool | grep -A 20 '"receivers"'
+```
+
+### 测试告警
+
+创建一个测试告警来验证 AlertManager 功能：
+
+```bash
+# 1. 创建一个临时的 PrometheusRule
+kubectl apply -f - <<EOF
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: test-alert-rule
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  groups:
+    - name: test.rules
+      rules:
+        - alert: TestAlert
+          expr: vector(1)
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "测试告警"
+            description: "这是一个测试告警"
+EOF
+
+# 2. 等待 1-2 分钟后查看告警
+curl -s http://<MASTER_IP>:30909/api/v1/alerts | python3 -m json.tool | grep TestAlert
+
+# 3. 查看 AlertManager 接收到的告警
+curl -s http://<MASTER_IP>:30903/api/v2/alerts | python3 -m json.tool | grep TestAlert
+
+# 4. 删除测试规则
+kubectl delete prometheusrule test-alert-rule -n monitoring
+```
+
+### 配置通知接收器
+
+当前配置使用 webhook 作为通知方式，需要根据实际需求修改 webhook URL：
+
+修改 [install/values.yaml](./install/values.yaml) 中的 receivers 配置：
+
+```yaml
+receivers:
+  - name: 'critical-receiver'
+    webhook_configs:
+      - url: 'http://your-webhook-url/critical'  # 替换为实际的 webhook URL
+        send_resolved: true
+  
+  - name: 'warning-receiver'
+    webhook_configs:
+      - url: 'http://your-webhook-url/warning'  # 替换为实际的 webhook URL
+        send_resolved: true
+  
+  - name: 'cicd-receiver'
+    webhook_configs:
+      - url: 'http://your-webhook-url/cicd'  # 替换为实际的 webhook URL
+        send_resolved: true
+```
+
+重新部署：
+
+```bash
+helm upgrade prometheus prometheus-community/kube-prometheus-stack \
+  -n monitoring \
+  -f install/values.yaml
+```
 
 ---
 
@@ -437,6 +816,125 @@ kube-state-metrics:
 
 ---
 
+## 验证系统
+
+### 一键验证脚本
+
+使用 [verify-monitoring.sh](./verify-monitoring.sh) 脚本可以自动化验证监控系统的所有关键组件：
+
+```bash
+./verify-monitoring.sh
+```
+
+**验证内容**:
+1. ServiceMonitor 存在性验证
+2. Prometheus Targets 状态验证
+3. Tekton 指标数据验证
+4. ArgoCD 指标数据验证
+5. Grafana Dashboard 验证
+
+**最新验证结果** (2026-01-03):
+```
+[INFO] =========================================
+[INFO] 监控系统一键验证脚本
+[INFO] =========================================
+
+[INFO] 步骤 1: 验证 ServiceMonitor 存在性
+[INFO] ✓ Tekton ServiceMonitor 存在
+[INFO] ✓ ArgoCD ServiceMonitor 存在
+
+[INFO] 步骤 2: 验证 Prometheus Targets 状态
+[INFO] Prometheus Pod: prometheus-prometheus-kube-prometheus-prometheus-0
+[INFO] ✓ 找到       20 个 Tekton 相关的 Target
+[INFO] ✓ 找到       14 个 ArgoCD 相关的 Target
+
+[INFO] 步骤 3: 验证 Tekton 指标数据
+[INFO] ✓ Tekton 指标数据存在
+
+[INFO] 步骤 4: 验证 ArgoCD 指标数据
+[INFO] ✓ ArgoCD 指标数据存在
+
+[INFO] 步骤 5: 验证 Grafana Dashboard
+[INFO] ✓ DevOps Platform Overview Dashboard 存在
+
+[INFO] =========================================
+[INFO] 验证报告
+[INFO] =========================================
+
+[INFO] 通过: 7
+[INFO] 失败: 0
+
+[INFO] ✓ 所有验证通过！
+```
+
+### 详细验证文档
+
+完整的验证流程和故障排查指南请参考 [VERIFICATION.md](./VERIFICATION.md)，包含：
+
+- 服务器信息（Master/Worker IP、SSH 登录方式、服务访问地址）
+- 5 个验证步骤的详细说明
+- 每步的验证命令、成功/失败标准、失败处理方法
+- 验证结果汇总表
+- 常见问题排查指南
+
+### 手动验证步骤
+
+如果需要手动验证，可以按照以下步骤：
+
+#### 1. 验证 ServiceMonitor 存在性
+
+```bash
+sshpass -p '1Qaz2Wsx' ssh -o StrictHostKeyChecking=no root@182.42.82.135 'KUBECONFIG=/etc/kubernetes/admin.conf kubectl get servicemonitors -n monitoring'
+```
+
+预期输出包含：
+- `tekton-servicemonitor`
+- `argocd-application-controller-servicemonitor`
+- `argocd-repo-server-servicemonitor`
+
+#### 2. 验证 Prometheus Targets 状态
+
+```bash
+# 端口转发 Prometheus
+kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090 --address 0.0.0.0 &
+
+# 访问 http://182.42.82.135:9090/targets
+# 应该看到 Tekton 和 ArgoCD 相关的 targets 状态为 "up"
+```
+
+#### 3. 验证指标数据
+
+Tekton 指标：
+```bash
+# 在 Prometheus UI 中查询
+up{job=~".*tekton.*"}
+```
+
+ArgoCD 指标：
+```bash
+# 在 Prometheus UI 中查询
+up{job=~".*argocd.*"}
+```
+
+#### 4. 验证 Grafana Dashboard
+
+访问 Grafana: http://182.42.82.135:30300
+- 登录 (admin / admin123)
+- 打开 "DevOps Platform Overview" Dashboard
+- 验证所有面板都有数据显示
+
+### 验证结果汇总表
+
+| 验证项 | 状态 | 备注 |
+|--------|------|------|
+| ServiceMonitor 存在性 | ✅ 通过 | Tekton 和 ArgoCD ServiceMonitor 都存在 |
+| Prometheus Targets 状态 | ✅ 通过 | 20 个 Tekton Target，14 个 ArgoCD Target |
+| Tekton 指标数据 | ✅ 通过 | 指标数据正常采集 |
+| ArgoCD 指标数据 | ✅ 通过 | 指标数据正常采集 |
+| Grafana Dashboard | ✅ 通过 | DevOps Platform Overview Dashboard 已导入 |
+
+---
+
 ## 常用命令
 
 ```bash
@@ -485,6 +983,10 @@ kubectl get secret -n monitoring prometheus-grafana -o jsonpath="{.data.admin-pa
 4. ✅ 解决 sidecar 容器问题
 5. ✅ 所有 Pod 正常运行
 6. ✅ Grafana 和 Prometheus 可访问
-7. ⏳ 配置 DevOps 组件 ServiceMonitor（可选）
-8. ⏳ 导入自定义 Dashboard（可选）
-9. ⏳ 配置告警规则（可选）
+7. ✅ 配置 Tekton ServiceMonitor
+8. ✅ 配置 ArgoCD ServiceMonitor
+9. ✅ 导入 DevOps Overview Dashboard
+10. ✅ 验证所有监控目标正常
+11. ✅ 创建验证文档 (VERIFICATION.md)
+12. ✅ 创建一键验证脚本 (verify-monitoring.sh)
+13. ✅ 执行验证并确认所有项通过

@@ -13,7 +13,7 @@ spec:
     matchLabels:
       app.kubernetes.io/name: argocd-application-controller
   endpoints:
-    - port: "8082"
+    - port: metrics
       interval: 30s
       path: /metrics
 ---
@@ -31,6 +31,25 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: argocd-repo-server
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: argocd-server-servicemonitor
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - argocd
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-server
   endpoints:
     - port: metrics
       interval: 30s

@@ -295,8 +295,8 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "rate(tekton_pipelinerun_duration_seconds_sum[5m])",
-          "legendFormat": "Pipeline Duration",
+          "expr": "up{job=\"tekton-pipelines-controller\"}",
+          "legendFormat": "Tekton Controller Status",
           "refId": "A"
         }
       ],
@@ -364,14 +364,19 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "argocd_app_sync_total{namespace=\"argocd\"}",
-          "legendFormat": "Sync Total",
+          "expr": "up{job=\"argocd-application-controller\"}",
+          "legendFormat": "ArgoCD Controller Status",
           "refId": "A"
         },
         {
-          "expr": "argocd_app_sync_failed_total{namespace=\"argocd\"}",
-          "legendFormat": "Sync Failed",
+          "expr": "up{job=\"argocd-repo-server\"}",
+          "legendFormat": "ArgoCD Repo Server Status",
           "refId": "B"
+        },
+        {
+          "expr": "up{job=\"argocd-server\"}",
+          "legendFormat": "ArgoCD Server Status",
+          "refId": "C"
         }
       ],
       "title": "ArgoCD Application Sync Status",

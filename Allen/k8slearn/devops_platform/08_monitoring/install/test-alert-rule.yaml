@@ -1,0 +1,20 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: test-alert-rule
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  groups:
+    - name: test.rules
+      rules:
+        - alert: TestPingAlert
+          expr: vector(1)
+          for: 1m
+          labels:
+            severity: warning
+            component: test
+          annotations:
+            summary: "测试 Ping 告警"
+            description: "这是一个测试告警，用于验证告警系统功能"

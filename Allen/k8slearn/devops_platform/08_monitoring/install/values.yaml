@@ -66,13 +66,13 @@ grafana:
   
   sidecar:
     image:
-      registry: quay.io
-      repository: kiwigrid/k8s-sidecar
+      registry: swr.cn-north-4.myhuaweicloud.com
+      repository: ddn-k8s/quay.io/kiwigrid/k8s-sidecar
       tag: 1.30.3
     dashboards:
-      enabled: false
+      enabled: true
     datasources:
-      enabled: false
+      enabled: true
 
 # ============================================
 # Prometheus 配置
@@ -110,10 +110,82 @@ prometheus:
     podMonitorSelectorNilUsesHelmValues: false
 
 # ============================================
-# AlertManager 配置（禁用）
+# AlertManager 配置
 # ============================================
 alertmanager:
-  enabled: false
+  enabled: true
+  
+  service:
+    type: NodePort
+    nodePort: 30903
+  
+  alertmanagerSpec:
+    image:
+      registry: swr.cn-north-4.myhuaweicloud.com
+      repository: ddn-k8s/quay.io/prometheus/alertmanager
+      tag: v0.27.0
+    
+    retention: 120h
+    
+    resources:
+      requests:
+        memory: 128Mi
+        cpu: 50m
+      limits:
+        memory: 256Mi
+        cpu: 100m
+    
+    storage: {}
+  
+  config:
+    global:
+      resolve_timeout: 5m
+    
+    route:
+      group_by: ['alertname', 'namespace', 'severity']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      receiver: 'default-receiver'
+      routes:
+        - match:
+            severity: critical
+          receiver: 'critical-receiver'
+          group_wait: 10s
+          repeat_interval: 1h
+        - match:
+            severity: warning
+          receiver: 'warning-receiver'
+          repeat_interval: 4h
+        - match_re:
+            alertname: ^(Tekton|ArgoCD).*
+          receiver: 'cicd-receiver'
+          group_by: ['alertname', 'namespace']
+    
+    receivers:
+      - name: 'default-receiver'
+        webhook_configs:
+          - url: 'http://localhost:5001/webhook'
+            send_resolved: true
+      - name: 'critical-receiver'
+        webhook_configs:
+          - url: 'http://localhost:5001/webhook/critical'
+            send_resolved: true
+      - name: 'warning-receiver'
+        webhook_configs:
+          - url: 'http://localhost:5001/webhook/warning'
+            send_resolved: true
+      - name: 'cicd-receiver'
+        webhook_configs:
+          - url: 'http://localhost:5001/webhook/cicd'
+            send_resolved: true
+    
+    inhibit_rules:
+      - source_match:
+          severity: 'critical'
+        target_match:
+          severity: 'warning'
+        equal: ['alertname', 'namespace', 'instance']
 
 # ============================================
 # Node Exporter 配置
@@ -183,7 +255,7 @@ kubeEtcd:
 defaultRules:
   create: true
   rules:
-    alertmanager: false
+    alertmanager: true
     etcd: false
     configReloaders: false
     general: true
