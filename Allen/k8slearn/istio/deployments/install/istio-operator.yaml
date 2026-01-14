@@ -1,0 +1,29 @@
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: istio-operator
+  namespace: istio-system
+spec:
+  profile: demo
+  components:
+    pilot:
+      k8s:
+        env:
+          - name: PILOT_TRACE_SAMPLING
+            value: "100"
+    ingressGateways:
+    - name: istio-ingressgateway
+      enabled: true
+      k8s:
+        service:
+          type: LoadBalancer
+    egressGateways:
+    - name: istio-egressgateway
+      enabled: true
+  values:
+    global:
+      mtls:
+        enabled: true
+    gateways:
+      istio-ingressgateway:
+        type: LoadBalancer
