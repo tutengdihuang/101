@@ -1,0 +1,33 @@
+# 滚动更新策略示例
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rolling-update-demo
+  labels:
+    app: rolling-demo
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: rolling-demo
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # 最多超出期望副本数 1 个
+      maxUnavailable: 1  # 最多有 1 个不可用
+  template:
+    metadata:
+      labels:
+        app: rolling-demo
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5

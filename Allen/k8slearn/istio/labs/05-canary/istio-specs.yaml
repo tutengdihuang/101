@@ -1,0 +1,44 @@
+# VirtualService - 基于 Header 的金丝雀路由
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: canary
+spec:
+  hosts:
+  - canary
+  http:
+  # 规则1：Header user=jesse → v2 (金丝雀)
+  - match:
+    - headers:
+        user:
+          exact: jesse
+    route:
+    - destination:
+        host: canary
+        subset: v2
+  # 规则2：默认 → v1 (稳定版)
+  - route:
+    - destination:
+        host: canary
+        subset: v1
+---
+# DestinationRule - 定义服务子集
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: canary
+spec:
+  host: canary
+  trafficPolicy:
+    loadBalancer:
+      simple: RANDOM
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+    trafficPolicy:
+      loadBalancer:
+        simple: ROUND_ROBIN

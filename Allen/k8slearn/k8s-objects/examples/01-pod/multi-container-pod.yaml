@@ -1,0 +1,29 @@
+# 多容器 Pod 示例（Sidecar 模式）
+apiVersion: v1
+kind: Pod
+metadata:
+  name: multi-container-pod
+  labels:
+    app: multi-container
+spec:
+  containers:
+  # 主容器：Web 服务器
+  - name: nginx
+    image: nginx:1.21
+    ports:
+    - containerPort: 80
+    volumeMounts:
+    - name: shared-logs
+      mountPath: /var/log/nginx
+  
+  # Sidecar 容器：日志收集
+  - name: log-collector
+    image: busybox
+    command: ['sh', '-c', 'tail -f /var/log/nginx/access.log']
+    volumeMounts:
+    - name: shared-logs
+      mountPath: /var/log/nginx
+  
+  volumes:
+  - name: shared-logs
+    emptyDir: {}

@@ -1,0 +1,35 @@
+# Startup Probe 示例 - 适用于慢启动应用
+apiVersion: v1
+kind: Pod
+metadata:
+  name: startup-demo
+  labels:
+    app: startup-demo
+spec:
+  containers:
+  - name: app
+    image: busybox
+    args:
+    - /bin/sh
+    - -c
+    # 模拟慢启动：60秒后才创建健康文件
+    - sleep 60; touch /tmp/healthy; sleep 600
+    
+    # Startup Probe：在启动期间保护应用
+    startupProbe:
+      exec:
+        command:
+        - cat
+        - /tmp/healthy
+      failureThreshold: 30      # 最多允许失败 30 次
+      periodSeconds: 10         # 每 10 秒检查一次
+      # 总共允许 30 * 10 = 300 秒的启动时间
+    
+    # Liveness Probe：启动完成后才生效
+    livenessProbe:
+      exec:
+        command:
+        - cat
+        - /tmp/healthy
+      periodSeconds: 10
+      failureThreshold: 3

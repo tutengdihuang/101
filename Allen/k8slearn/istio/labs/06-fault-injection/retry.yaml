@@ -1,0 +1,31 @@
+# 重试 + 故障注入配置
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: canary
+spec:
+  hosts:
+  - canary
+  http:
+  # 规则1：v2 配置重试
+  - match:
+    - headers:
+        user:
+          exact: jesse
+    route:
+    - destination:
+        host: canary
+        subset: v2
+    retries:
+      attempts: 3        # 重试 3 次
+      perTryTimeout: 2s  # 每次重试超时 2 秒
+  # 规则2：v1 注入 80% 的 500 错误
+  - route:
+    - destination:
+        host: canary
+        subset: v1
+    fault:
+      abort:
+        httpStatus: 500      # 返回 500 错误
+        percentage:
+          value: 80          # 80% 的请求

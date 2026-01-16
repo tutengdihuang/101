@@ -1,0 +1,16 @@
+# Headless Service 示例
+# 用于 StatefulSet 或需要直接访问 Pod 的场景
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-headless
+  labels:
+    app: nginx
+spec:
+  clusterIP: None          # 关键：设置为 None
+  selector:
+    app: nginx
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80

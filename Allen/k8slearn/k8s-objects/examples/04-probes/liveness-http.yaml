@@ -1,0 +1,25 @@
+# Liveness Probe - HTTP 检查示例
+apiVersion: v1
+kind: Pod
+metadata:
+  name: liveness-http
+  labels:
+    app: liveness-demo
+spec:
+  containers:
+  - name: liveness
+    image: registry.k8s.io/liveness
+    args:
+    - /server
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: 8080
+        httpHeaders:
+        - name: Custom-Header
+          value: Awesome
+      initialDelaySeconds: 3    # 启动后等待 3 秒
+      periodSeconds: 3          # 每 3 秒检查一次
+      timeoutSeconds: 1         # 超时时间 1 秒
+      failureThreshold: 3       # 连续失败 3 次才认为不健康
+      successThreshold: 1       # 成功 1 次就认为健康

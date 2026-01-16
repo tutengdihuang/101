@@ -1,0 +1,24 @@
+# Liveness Probe - Exec 命令检查示例
+apiVersion: v1
+kind: Pod
+metadata:
+  name: liveness-exec
+  labels:
+    app: liveness-exec-demo
+spec:
+  containers:
+  - name: liveness
+    image: busybox
+    args:
+    - /bin/sh
+    - -c
+    # 启动后创建健康文件，30秒后删除（模拟应用故障）
+    - touch /tmp/healthy; sleep 30; rm -f /tmp/healthy; sleep 600
+    livenessProbe:
+      exec:
+        command:
+        - cat
+        - /tmp/healthy
+      initialDelaySeconds: 5
+      periodSeconds: 5
+      failureThreshold: 3

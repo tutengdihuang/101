@@ -1,0 +1,16 @@
+# ClusterIP Service 示例（默认类型）
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-clusterip
+  labels:
+    app: nginx
+spec:
+  type: ClusterIP          # 默认类型，可省略
+  selector:
+    app: nginx
+  ports:
+  - name: http
+    port: 80               # Service 端口
+    targetPort: 80         # Pod 端口
+    protocol: TCP

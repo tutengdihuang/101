@@ -1,0 +1,9 @@
+# ExternalName Service 示例
+# 用于访问集群外部服务
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-db
+spec:
+  type: ExternalName
+  externalName: db.example.com    # 外部服务的域名
