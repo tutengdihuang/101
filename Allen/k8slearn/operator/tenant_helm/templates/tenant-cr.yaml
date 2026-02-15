@@ -1,0 +1,21 @@
+{{- if .Values.createExampleTenant }}
+apiVersion: tenant.cncamp.io/v1alpha1
+kind: Tenant
+metadata:
+  name: {{ .Values.tenant.name }}
+  labels:
+    {{- include "tenant-operator.labels" . | nindent 4 }}
+spec:
+  namespace: {{ .Values.tenant.spec.namespace }}
+  adminUser: {{ .Values.tenant.spec.adminUser }}
+  {{- if .Values.tenant.spec.objectCounts }}
+  objectCounts:
+    configMaps: {{ .Values.tenant.spec.objectCounts.configMaps | default "10" | quote }}
+    secrets: {{ .Values.tenant.spec.objectCounts.secrets | default "10" | quote }}
+    services: {{ .Values.tenant.spec.objectCounts.services | default "5" | quote }}
+  {{- end }}
+  {{- if .Values.tenant.spec.podQuota }}
+  podQuota:
+    pods: {{ .Values.tenant.spec.podQuota.pods | default "10" | quote }}
+  {{- end }}
+{{- end }}

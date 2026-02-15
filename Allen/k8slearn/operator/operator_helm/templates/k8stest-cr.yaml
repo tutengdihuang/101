@@ -1,0 +1,17 @@
+{{- if .Values.createExampleCR }}
+apiVersion: apps.cncamp.io/v1alpha1
+kind: K8sTest
+metadata:
+  name: {{ .Values.k8stest.name }}
+  namespace: {{ .Values.k8stest.namespace }}
+  labels:
+    {{- include "k8s-test-operator.labels" . | nindent 4 }}
+spec:
+  namespace: {{ .Values.k8stest.spec.namespace }}
+  imageRegistry: {{ .Values.k8stest.spec.imageRegistry }}
+  imageTag: {{ .Values.k8stest.spec.imageTag }}
+  replicas: {{ .Values.k8stest.spec.replicas }}
+  {{- if .Values.k8stest.spec.pullSecret }}
+  pullSecret: {{ .Values.k8stest.spec.pullSecret }}
+  {{- end }}
+{{- end }}

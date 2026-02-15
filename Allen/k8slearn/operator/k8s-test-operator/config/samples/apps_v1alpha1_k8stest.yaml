@@ -1,0 +1,13 @@
+apiVersion: apps.cncamp.io/v1alpha1
+kind: K8sTest
+metadata:
+  labels:
+    app.kubernetes.io/name: k8s-test-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: k8stest-sample
+spec:
+  namespace: service-test
+  imageRegistry: crpi-j9gshcbjtb1i6c7h.cn-hangzhou.personal.cr.aliyuncs.com/tutengdihuang
+  imageTag: latest
+  replicas: 2
+  pullSecret: aliyun-cr

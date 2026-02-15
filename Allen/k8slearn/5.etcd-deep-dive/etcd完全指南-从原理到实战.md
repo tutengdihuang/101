@@ -1,1034 +1,672 @@
-# etcd 完全指南：从原理到实战
+# etcd 完全指南：从原理到实战（教与学专家版）
 
-> 一篇文章带你彻底搞懂 etcd，Kubernetes 的"记忆中枢"
+> 目标：让你 **学得快、教得好、记得住、用得上**。本篇先给 30 秒版“秒懂定位”，再给知识骨架，再进入工程细节（含一致性、读语义、watch/compaction、WAL/snapshot/backend、备份恢复、K8s 场景）。
 
-## 前言
+---
+
+## 一、秒懂定位（30 秒版）
+
+**这个知识解决什么问题**：
+
+etcd 解决的是：在分布式系统里，大家对“当前事实”必须达成一致（谁是 Leader、配置是什么、对象状态是什么），而且要能容灾、可追溯、可订阅变更。
+
+**一句话精华**：
+
+etcd = “带 Raft 的一致性账本 + 带 MVCC 的时光机 + 带 Watch 的事件总线（但不是 MQ）”。
+
+**适合谁学**：
+
+- 想把 Kubernetes 运维/排障做稳的人
+- 需要做配置中心、服务发现、分布式锁的人
+
+**不适合谁**：
+
+- 把 etcd 当 Redis 缓存用、写大对象/高吞吐场景（会痛苦）
+
+---
+
+## 二、核心框架（知识骨架）
+
+**核心观点**：
+
+etcd 是一个提供 **可推理一致性语义** 的分布式 KV：写走 Leader 并需多数派提交；读分线性一致与本地串行化；数据按 MVCC 留历史；watch 基于 revision 推增量；空间回收必须 compact→defrag。
+
+**关键概念速查表**：
+
+| 概念 | 大白话解释 | 生活比喻 | 一句话记忆 |
+|------|-----------|---------|-----------|
+| Raft/Leader | 写请求要找“班长”盖章，且要过半同学同意 | 班级投票 | 多数派提交才算数 |
+| Revision | 全局递增的“提交号” | 账本页码 | 每次提交 +1 |
+| MVCC | 同一个 key 有多个历史版本 | Git 提交历史 | 能查旧版本，但会占空间 |
+| Linearizable Read | 保证读到最新事实 | 查银行实时余额 | 慢但准 |
+| Serializable Read | 从本地读，可能旧 | 看昨天缓存的余额 | 快但可能落后 |
+| Watch | 订阅变更事件流 | 关注公众号推送 | 会断，需要续接 |
+| Compact/Defrag | 丢历史/再整理文件 | 清理旧账+整理抽屉 | 先丢再整理 |
+
+**知识地图**：
+
+`一致性(raft) → 读语义 → MVCC/revision → watch → 存储(WAL/backend) → 运维(compact/defrag/备份) → K8s 场景`
+
+---
+
+## 三、深入浅出讲解（教学版）
+
+**开场钩子**：
+
+你以为 etcd 是“分布式版 Redis”？那你就像把“人民银行”当成“便利店收银台”——都管钱，但一个管的是**事实与秩序**，另一个管的是**效率与周转**。
+
+### 【概念 1：Raft 与多数派】
+
+**一句话是什么**：Raft 用“选 Leader + 复制日志 + 多数派提交”保证所有节点对写入顺序一致。
+
+**生活化比喻**：
+
+把写入想成“改班规”：必须班长先写进班规本，然后至少 2/3 同学确认签字，班规才生效。
+
+**引经据典**：
+
+“治大国若烹小鲜”——分布式系统不是猛火快炒，关键是火候稳定；etcd 的火候就是网络与磁盘 fsync。
+
+**常见误区（幽默版）**：
+
+“3 节点集群，挂 2 台也能写吧？”——这就像 3 人投票只剩 1 人还想通过决议：这不是民主，这是独裁。
+
+**启发式问题**：
+- 为什么 etcd 推荐 3/5/7，而不是 4/6？
+- 写入延迟主要受什么影响：CPU、网络还是磁盘？为什么？
+
+### 【概念 2：读语义（Linearizable vs Serializable）】
+
+**一句话是什么**：同样是 get，etcd 允许你选择“最新但可能更慢”或“更快但可能旧”。
+
+**生活化比喻**：
+
+- Linearizable：去银行柜台查实时余额（慢但准）
+- Serializable：看你手机里昨天同步的余额（快但可能落后）
+
+**常见误区（幽默版）**：
+
+“读肯定比写快”——你要是 insist 线性一致读，读也得“找班长确认一下”，不一定快到哪里去。
+
+**启发式问题**：
+- K8s 为什么更倾向强一致语义？
+- 你自己的业务哪些读可以容忍旧值？
+
+### 【概念 3：Watch 与 compaction】
+
+**一句话是什么**：watch 是“从某个 revision 起持续收增量”；但历史会被 compact，旧 revision 会被“铲平”，watch 会断。
+
+**生活化比喻**：
+
+watch 像追剧：你从第 120 集开始追；但平台把 1~150 集下架了（compact），你再从 120 集打开就会报错，只能重拉最新全集再接着追。
+
+**常见误区（幽默版）**：
+
+把 watch 当 MQ：这就像把“朋友圈通知”当“银行转账流水”——通知可以漏、可以断，重要信息得有补偿机制（list+watch 续接）。
+
+---
+
+## 四、精华提炼（去废话版）
+
+**核心要点（只保留干货）**：
+
+1. **写入路径**：必须走 Leader，多数派确认后提交；性能瓶颈多在 **WAL fsync + 网络**。
+2. **读语义**：线性一致读更“真实”，串行化读更“快”；别再一句话说“读快写慢”。
+3. **watch 可靠性**：watch 会断（网络/leader 切换/compact），正确姿势永远是 **list → watch → 断了再 list**。
+4. **空间回收**：删除不会立刻变小；必须 **compact（丢历史）→ defrag（物理整理）**。
+5. **K8s 场景**：不要直接改 `/registry`；备份用 snapshot；排障先看 health/status/leader。
+
+**砍掉的废话**：
+- “etcd 就是分布式 Redis”这类简单粗暴对比
+- 只讲命令不讲边界（比如只讲 watch 不讲 compacted）
+
+**必须记住的**：
+- 多数派是硬边界；线性一致读与串行化读是两套语义；compact→defrag 顺序不能反。
+
+---
+
+## 五、行动清单（从 5 分钟到本周实战）
+
+**立即可做（5 分钟内）**：
+- [ ] 用 `etcdctl endpoint status -w table` 看一下 revision/leader
+- [ ] 跑一个 `watch --prefix`，然后手动 `put/del` 看事件流
+
+**本周实践**：
+- [ ] 写一个“list + watch 自动续接”的小 demo（遇到 compacted 自动重新 list）
+- [ ] 在测试环境演练一次 `snapshot save` + `snapshot restore`
+
+**进阶挑战**：
+- [ ] 做一次 NOSPACE 的故障演练：触发告警→compact→defrag→disarm
+- [ ] 观察 wal fsync 延迟与写延迟的关系（metrics）
+
+---
+
+## 六、学习检查（自测题）
+
+- [ ] 为什么 etcd 集群推荐 3/5 节点而不是 4？
+- [ ] 线性一致读与串行化读的差异是什么？各适合什么场景？
+- [ ] watch 报 `compacted` 时正确处理流程是什么？
+- [ ] 为什么空间回收要先 compact 再 defrag？
+- [ ] 解释 WAL / snapshot / backend 三者的分工。
+
+---
+
+## 七、金句收藏
+
+**我的总结金句**：
+
+“etcd 不怕你写慢，就怕你以为它该写快。”
+
+“watch 不是消息队列，别让它背不该背的锅。”
+
+“compact 是删历史，defrag 是整理房间：先扔旧物，再收拾地板。”
+
+---
+
+## 八、画龙点睛（收尾）
+
+如果你只把 etcd 当成一个 KV，你最多学会 `put/get`；如果你把它当成一个“**一致性系统**”，你就能回答生产里最关键的问题：
+- 为什么今天写入突然抖了？
+- 为什么 controller 收不到事件？
+- 为什么空间不降？
+- 为什么恢复后集群看似活着但状态不推进？
+
+**悬念预告**：下一篇可以把“API Server 的 storage layer + watch cache + etcd compaction”串起来，你会看到 K8s 为什么要这么设计。
+
+---
+
+## 九、延伸资源
+
+- 官方文档：https://etcd.io/docs/
+- Raft 可视化：建议找一个在线可视化工具跑一遍 leader 选举
+- K8s 源码：apiserver watch cache / storage 接口（理解 list+watch）
+
+---
+
+## 十、版本信息
+
+- 文档版本：v3.0（按 .kiro/steering 教学规范重写）
+- 创建日期：2026-01-16
+- 最后更新：2026-01-18
+- 基于教学经验：30 年教学经验 + 20 年学习研究经验（steering 05/09/11）
+- 适用对象：进阶/高级（偏工程与生产）
+
+---
+
+## 十一、质量检查（交付前自检）
+
+**学习能力维度**：
+- [x] 是否给出 80/20 的核心要点与“必须记住的”
+- [x] 是否提供生活化比喻/类比解释抽象概念
+- [x] 是否提供实践建议与行动清单
+- [x] 是否提供自测题（学习检查）
+
+**教学能力维度**：
+- [x] 是否循序渐进：秒懂定位 → 骨架 → 深入讲解 → 实战行动
+- [x] 是否预防常见误区（watch 当 MQ、compact/defrag 顺序等）
+- [x] 是否提供可迁移的排障/工程心智模型
+
+---
+
+## 附录：工程深度正文（30 分钟版 / 深度版）
+
+# etcd 完全指南（深度版）：从原理到工程实战
+
+> 面向工程与生产的 etcd 指南：把一致性、存储引擎、watch、备份恢复、参数与 K8s 场景一次讲清楚。
+
+## 前言：为什么你必须“像理解数据库一样”理解 etcd
 
 如果把 Kubernetes 比作一个人：
 - API Server 是嘴巴（接收指令）
-- Controller Manager 是手脚（执行动作）
-- Scheduler 是大脑的决策区（调度决策）
-- **etcd 是记忆中枢**（存储所有状态）
+- Controller Manager 是手脚（把期望状态变成现实）
+- Scheduler 是大脑的调度决策区
+- **etcd 是记忆与事实来源（Source of Truth）**
 
-etcd 挂了，整个集群就"失忆"了。所以理解 etcd 对于运维 K8s 至关重要。
+K8s 的所有对象（Pod/Deployment/Service/Secret/RBAC/…）最终都会落在 etcd。
+一旦 etcd 失效，你会看到：
+- API Server 读写失败
+- Controller 无法收敛
+- 集群“看起来还活着”，但状态无法推进
 
-本文将从原理到实战，带你彻底搞懂 etcd。文章很长，建议收藏后慢慢看。
+本文不是“命令堆砌”，而是把 etcd 当作一个 **一致性存储系统** 来讲：
+- 它保证的到底是什么一致性？
+- 写入为什么慢？读为什么有两种语义？
+- watch 为什么是 K8s 的核心机制？为什么会断？
+- compact/defrag/snapshot/WAL 的关系是什么？
+- 生产上怎么选节点数、怎么配参数、怎么做备份恢复？
 
 ---
 
 ## 目录
 
-1. [什么是 etcd？为什么 K8s 选择它？](#一什么是-etcd为什么-k8s-选择它)
-2. [etcd 核心原理](#二etcd-核心原理)
-3. [基础操作实战](#三基础操作实战)
-4. [数据模型深度解析](#四数据模型深度解析)
-5. [高可用集群部署](#五高可用集群部署)
-6. [备份恢复实战](#六备份恢复实战)
-7. [运维最佳实践](#七运维最佳实践)
-8. [K8s 中的 etcd 操作](#八k8s-中的-etcd-操作)
+1. [你需要的心智模型：etcd 是什么（以及它不是什么）](#1-你需要的心智模型etcd-是什么以及它不是什么)
+2. [一致性与 Raft：写入路径与故障边界](#2-一致性与-raft写入路径与故障边界)
+3. [读语义：Linearizable vs Serializable（别再笼统说“读快”）](#3-读语义linearizable-vs-serializable别再笼统说读快)
+4. [数据模型：MVCC / revision / version / 事务（txn）](#4-数据模型mvcc--revision--version--事务txn)
+5. [Lease 与 KeepAlive：服务注册、心跳与自动清理](#5-lease-与-keepalive服务注册心跳与自动清理)
+6. [Watch：K8s 的事件驱动内核（以及 watch 断了怎么办）](#6-watchk8s-的事件驱动内核以及-watch-断了怎么办)
+7. [存储引擎：WAL / Snapshot / Backend（BoltDB）与空间回收](#7-存储引擎wal--snapshot--backendboltdb与空间回收)
+8. [集群部署：节点数、网络、磁盘、TLS 与常见坑](#8-集群部署节点数网络磁盘tls-与常见坑)
+9. [备份与恢复：正确的快照、恢复与灾备演练](#9-备份与恢复正确的快照恢复与灾备演练)
+10. [生产运维：告警、compact/defrag、关键参数与排障套路](#10-生产运维告警compactdefrag关键参数与排障套路)
+11. [Kubernetes 场景：如何安全地接触 K8s etcd](#11-kubernetes-场景如何安全地接触-k8s-etcd)
+12. [命令速查（只保留高频且不误导的）](#12-命令速查只保留高频且不误导的)
 
 ---
 
-## 一、什么是 etcd？为什么 K8s 选择它？
+## 1. 你需要的心智模型：etcd 是什么（以及它不是什么）
 
-### 1.1 etcd 是什么？
+### 1.1 etcd 是什么
 
-用最简单的话说：**etcd 就是一个分布式的 key-value 数据库**。
+一句话：**etcd 是一个提供线性一致性语义的分布式 KV 存储**（基于 Raft 复制日志）。
 
-就像 Redis，但有几个关键区别：
+它通常用来存“系统元数据/配置/服务发现信息”，特点是：
+- 写路径需要 quorum（多数派）确认
+- 读有不同一致性等级
+- 支持 MVCC（历史版本）
+- 支持 watch（增量订阅）
 
-| 特性 | etcd | Redis |
-|------|------|-------|
-| 一致性 | 强一致性（Raft） | 最终一致性 |
-| 用途 | 配置存储、服务发现 | 缓存、消息队列 |
-| 性能 | 写入较慢，读取快 | 读写都很快 |
-| 数据安全 | 数据不丢失 | 可能丢失 |
+### 1.2 etcd 不是什么
 
-**为什么 K8s 选择 etcd？** 因为 K8s 需要的是"绝对可靠"，而不是"极致性能"。
+- etcd 不是缓存（它追求一致性和可靠性，不追求极致吞吐）
+- etcd 不是 OLTP 数据库（不适合大对象、大量事务）
+- etcd 不是消息队列（watch 不是 MQ，存在 compaction 等边界）
 
-想象一下：如果 K8s 存储的 Pod 信息丢失了，整个集群就乱套了。所以 K8s 宁可慢一点，也要保证数据不丢。
+### 1.3 “etcd vs Redis”怎么说才严谨
 
-### 1.2 etcd 的核心特性
+很多文章用“Redis 最终一致 / etcd 强一致”来对比，这种说法过粗。
+更准确的对比是：
 
-| 特性 | 说明 | 生活比喻 |
-|------|------|---------|
-| **强一致性** | 所有节点数据一致 | 银行账本，每个分行数据必须一致 |
-| **高可用** | 多节点部署，容忍故障 | 多个备份硬盘 |
-| **Watch 机制** | 监听数据变化 | 订阅通知 |
-| **事务支持** | 原子操作 | 要么全成功，要么全失败 |
-| **版本控制** | 保留历史版本 | Git 版本管理 |
+| 维度 | etcd | Redis（典型主从/集群） |
+|---|---|---|
+| 核心目标 | **一致性 + 元数据可靠存储** | **低延迟 + 高吞吐** |
+| 一致性模型 | Raft 多数派提交，支持 **线性一致读/写** | 一致性取决于拓扑与同步策略：异步复制可能读到旧值 |
+| 读语义 | 线性一致 / 可串行化（本地）两种 | 通常读主/读从策略决定一致性 |
+| 适配场景 | 配置中心、服务发现、K8s 存储 | 缓存、会话、计数、队列等 |
 
-### 1.3 etcd 在 K8s 中的角色
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Kubernetes 集群                         │
-│                                                             │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
-│  │ API Server  │───▶│    etcd     │◀───│ API Server  │     │
-│  └─────────────┘    │  (3 节点)   │    └─────────────┘     │
-│         │           └─────────────┘           │             │
-│         ▼                                     ▼             │
-│  ┌─────────────┐                      ┌─────────────┐       │
-│  │ Controller  │                      │  Scheduler  │       │
-│  │  Manager    │                      │             │       │
-│  └─────────────┘                      └─────────────┘       │
-└─────────────────────────────────────────────────────────────┘
-```
-
-etcd 存储了 K8s 的所有数据：
-- Pod、Deployment、Service 等对象定义
-- ConfigMap、Secret 配置
-- 节点信息、命名空间
-- RBAC 权限配置
-- ...
-
-**一句话总结**：etcd 是 K8s 的"数据库"，所有状态都存在这里。
+**结论**：K8s 选 etcd，不是因为它“快”，而是因为它提供了**可推理的一致性语义与故障边界**。
 
 ---
 
-## 二、etcd 核心原理
+## 2. 一致性与 Raft：写入路径与故障边界
 
-### 2.1 Raft 共识算法
+### 2.1 Raft 的核心（够用版）
 
-etcd 使用 Raft 算法保证数据一致性。Raft 的核心思想是：**选一个 Leader，所有写操作都经过 Leader**。
+etcd 集群中：
+- 只有 1 个 Leader
+- **所有写请求必须经由 Leader**
+- Leader 将写请求追加到 Raft 日志（WAL），复制给 Followers
+- **多数派（quorum）确认后提交（commit）**，写才算成功
 
-
-**Raft 的三种角色**：
-
-| 角色 | 说明 | 数量 |
-|------|------|------|
-| **Leader** | 领导者，处理所有写请求 | 1 个 |
-| **Follower** | 跟随者，复制 Leader 的数据 | 多个 |
-| **Candidate** | 候选人，选举时的临时状态 | 临时 |
-
-**写操作流程**：
+写路径可以理解为：
 
 ```
-1. 客户端发送写请求到 Leader
-2. Leader 将数据写入本地日志
-3. Leader 将日志复制到所有 Follower
-4. 超过半数节点确认后，Leader 提交数据
-5. Leader 返回成功给客户端
+client -> leader
+leader: append log
+leader -> followers: replicate log
+quorum ack
+leader: commit -> apply to backend
+reply to client
 ```
 
-**为什么需要"超过半数"？**
+### 2.2 为什么“多数派”是硬边界
 
-假设有 3 个节点，需要 2 个节点确认：
-- 1 个节点挂了，还有 2 个，可以继续工作
-- 2 个节点挂了，只剩 1 个，无法达到半数，停止服务
+以 3 节点为例：多数派是 2。
+- 挂 1 个节点：还能达成 2/3，多数派存在，集群可写
+- 挂 2 个节点：只能 1/3，多数派不存在，写入必须停止（避免脑裂）
 
-这就是为什么 etcd 集群通常是 **3 个或 5 个节点**：
-- 3 节点：容忍 1 个故障
-- 5 节点：容忍 2 个故障
-- 7 节点：容忍 3 个故障（但性能下降）
+因此生产常见节点数：
+- 3 节点：容忍 1 故障（最常见）
+- 5 节点：容忍 2 故障（更强容灾，但写延迟更高）
 
-### 2.2 MVCC：多版本并发控制
+### 2.3 你应该记住的工程结论
 
-etcd 使用 MVCC（Multi-Version Concurrency Control）来管理数据。
-
-**什么是 MVCC？**
-
-想象一个 Git 仓库：
-- 每次 commit 都有一个版本号
-- 你可以查看任意历史版本
-- 新的修改不会覆盖旧版本
-
-etcd 也是这样：
-- 每次写操作都会增加全局 **revision**
-- 旧版本数据不会立即删除
-- 可以查询任意历史版本
-
-**关键概念**：
-
-| 概念 | 说明 |
-|------|------|
-| **revision** | 全局递增的版本号，每次写操作都会增加 |
-| **create_revision** | key 创建时的 revision |
-| **mod_revision** | key 最后修改时的 revision |
-| **version** | key 被修改的次数 |
-
-### 2.3 Lease：租约机制
-
-Lease 是 etcd 的"定时炸弹"——给 key 设置一个生存时间，到期自动删除。
-
-**为什么需要 Lease？**
-
-场景：服务注册与发现
-- 服务启动时，向 etcd 注册自己
-- 如果服务挂了，注册信息应该自动删除
-- 否则其他服务会访问一个"死"服务
-
-Lease 就是解决这个问题的：
-- 服务注册时，创建一个 Lease
-- 服务定期续约（keep-alive）
-- 服务挂了，无法续约，Lease 过期，key 自动删除
-
-### 2.4 Watch：监听机制
-
-Watch 是 etcd 的杀手锏，K8s 的 Controller 就是靠它实现的。
-
-**Watch 的工作原理**：
-
-```
-1. 客户端向 etcd 发起 Watch 请求
-2. etcd 记录这个 Watch
-3. 当数据变化时，etcd 主动推送给客户端
-4. 客户端收到通知，执行相应操作
-```
-
-**K8s 如何使用 Watch？**
-
-```
-Controller 启动
-    ↓
-Watch /registry/pods/
-    ↓
-收到 Pod 创建事件
-    ↓
-调度 Pod 到节点
-    ↓
-更新 Pod 状态
-    ↓
-继续 Watch...
-```
-
-这就是 K8s "声明式" API 的秘密：你声明想要的状态，Controller 通过 Watch 监听变化，自动把实际状态调整到期望状态。
+- **写延迟 ≈ Leader 本地 fsync + 网络往返 + 多数派 fsync**
+- 磁盘（尤其 WAL 的 fsync）是 etcd 性能与稳定性的关键
+- 网络抖动会让 leader 选举更频繁，整体延迟抖动更大
 
 ---
 
-## 三、基础操作实战
+## 3. 读语义：Linearizable vs Serializable（别再笼统说“读快”）
 
-### 3.1 安装 etcd
+etcd 的读主要有两种一致性语义：
 
-**方式一：Docker（推荐学习使用）**
+### 3.1 Linearizable Read（线性一致读）
 
-```bash
-# 启动 etcd 容器
-docker run -d --name etcd-demo \
-  -p 2379:2379 \
-  -p 2380:2380 \
-  registry.aliyuncs.com/google_containers/etcd:3.5.0-0 \
-  /usr/local/bin/etcd \
-  --advertise-client-urls http://0.0.0.0:2379 \
-  --listen-client-urls http://0.0.0.0:2379
+- 读到的结果必须反映“所有已提交写”的全序
+- 通常需要与 leader/quorum 协调（确保读不落后）
+- 延迟更高，但语义最强
 
-# 验证
-docker exec etcd-demo etcdctl version
-```
+### 3.2 Serializable Read（可串行化/本地读）
 
-**实验输出**：
-```
-$ docker exec etcd-demo etcdctl version
-etcdctl version: 3.5.0
-API version: 3.5
-```
+- 可直接从本地状态机读取
+- 延迟更低
+- 可能读到旧数据（在 leader 切换、网络分区等情况下更明显）
 
-**方式二：本地启动（避免端口冲突）**
+**工程建议**：
+- 你关心“读到的就是最新事实”：用线性一致读
+- 你关心“低延迟的近似读取”且能容忍旧数据：可串行化读
 
-如果本地已有 K8s 集群，etcd 可能占用了默认端口：
-
-```bash
-etcd --listen-client-urls 'http://localhost:12379' \
-     --advertise-client-urls 'http://localhost:12379' \
-     --listen-peer-urls 'http://localhost:12380' \
-     --initial-advertise-peer-urls 'http://localhost:12380' \
-     --initial-cluster 'default=http://localhost:12380'
-```
-
-### 3.2 基本操作
-
-**写入数据（put）**：
-
-```bash
-# 进入容器
-docker exec -it etcd-demo sh
-
-# 写入数据
-etcdctl put name "张三"
-etcdctl put age "25"
-etcdctl put /config/database/host "192.168.1.100"
-etcdctl put /config/database/port "3306"
-```
-
-**实验输出**：
-```
-OK
-OK
-OK
-OK
-```
-
-**读取数据（get）**：
-
-```bash
-# 读取单个 key
-etcdctl get name
-
-# 读取带前缀的所有 key
-etcdctl get --prefix /config/
-
-# 只显示 key，不显示 value
-etcdctl get --prefix /config/ --keys-only
-
-# 以 JSON 格式输出（包含元数据）
-etcdctl get name -w=json
-```
-
-**实验输出**：
-```
-$ etcdctl get name
-name
-张三
-
-$ etcdctl get --prefix /config/
-/config/database/host
-192.168.1.100
-/config/database/port
-3306
-
-$ etcdctl get name -w=json
-{"header":{"cluster_id":14841639068965178418,"member_id":10276657743932975437,"revision":5,"raft_term":2},"kvs":[{"key":"bmFtZQ==","create_revision":2,"mod_revision":2,"version":1,"value":"5byg5LiJ"}],"count":1}
-```
-
-**删除数据（del）**：
-
-```bash
-# 删除单个 key
-etcdctl del name
-
-# 删除带前缀的所有 key
-etcdctl del --prefix /config/
-```
-
-**实验输出**：
-```
-1
-2
-```
-
-
-**监听变化（watch）**：
-
-```bash
-# 终端 1：启动监听
-etcdctl watch --prefix /
-
-# 终端 2：写入数据
-etcdctl put /app/status "running"
-etcdctl put /app/status "stopped"
-etcdctl del /app/status
-```
-
-**终端 1 输出**：
-```
-PUT
-/app/status
-running
-PUT
-/app/status
-stopped
-DELETE
-/app/status
-```
-
-每次数据变化，Watch 都会收到通知。这就是 K8s 实现"声明式"的秘密！
+K8s 场景下：
+- API Server 对一致性有严格要求，通常会选择更强语义
 
 ---
 
-## 四、数据模型深度解析
+## 4. 数据模型：MVCC / revision / version / 事务（txn）
 
-### 4.1 版本与历史
+### 4.1 MVCC 与 revision
 
-etcd 的一个强大特性是**保留历史版本**。
+etcd 的所有写入都会推进一个全局递增的 **revision**。
 
-**实验：观察 revision 变化**
+你可以把它想成“全局提交序号”：
+- 每次事务提交，revision +1
+- 每个 key 记录 create_revision、mod_revision、version
 
-```bash
-# 写入数据，观察 revision 变化
-etcdctl put /key val1
-etcdctl put /key val2
-etcdctl put /key val3
-etcdctl put /key val4
+| 字段 | 含义 |
+|---|---|
+| revision | 集群全局提交号 |
+| create_revision | key 第一次创建时的 revision |
+| mod_revision | 最近一次修改 key 的 revision |
+| version | 这个 key 被修改了多少次（逻辑版本） |
 
-# 查看当前值和元数据
-etcdctl get /key -w=json
-```
+### 4.2 事务（Txn）
 
-**实验输出**（简化）：
-```json
-{
-  "header": {"revision": 5},
-  "kvs": [{
-    "key": "/key",
-    "create_revision": 2,
-    "mod_revision": 5,
-    "version": 4,
-    "value": "val4"
-  }]
-}
-```
+etcd 事务支持 CAS 风格的 compare/then/else，核心价值在于：
+- 在强一致前提下实现“条件更新”
+- 常用于分布式锁、leader 选举、幂等写入
 
-**查询历史版本**：
-
-```bash
-# 查询 revision=2 时的值
-etcdctl get /key --rev=2
-
-# 查询 revision=3 时的值
-etcdctl get /key --rev=3
-```
-
-**实验输出**：
-```
-$ etcdctl get /key --rev=2
-/key
-val1
-
-$ etcdctl get /key --rev=3
-/key
-val2
-```
-
-这就是 etcd 的"时光机"功能！
-
-### 4.2 Lease 租约实战
-
-**创建 Lease**：
-
-```bash
-# 创建一个 30 秒的 Lease
-etcdctl lease grant 30
-```
-
-**实验输出**：
-```
-lease 694d81a1c98f0a0b granted with TTL(30s)
-```
-
-**使用 Lease 创建 key**：
-
-```bash
-# 使用 Lease 创建 key（注意替换 lease ID）
-etcdctl put /service/web --lease=694d81a1c98f0a0b "192.168.1.100:8080"
-
-# 查看 key
-etcdctl get /service/web
-
-# 查看 Lease 详情
-etcdctl lease timetolive 694d81a1c98f0a0b
-
-# 等待 30 秒后再查看
-sleep 35
-etcdctl get /service/web
-```
-
-**实验输出**：
-```
-$ etcdctl get /service/web
-/service/web
-192.168.1.100:8080
-
-$ etcdctl lease timetolive 694d81a1c98f0a0b
-lease 694d81a1c98f0a0b granted with TTL(30s), remaining(25s)
-
-（30秒后）
-$ etcdctl get /service/web
-（空，key 已被自动删除）
-```
-
-**Lease 续约**：
-
-```bash
-# 创建 Lease
-etcdctl lease grant 10
-
-# 绑定 key
-etcdctl put /heartbeat --lease=<lease_id> "alive"
-
-# 持续续约（会阻塞）
-etcdctl lease keep-alive <lease_id>
-```
-
-**实验输出**：
-```
-lease 694d81a1c98f0a10 keepalived with TTL(10)
-lease 694d81a1c98f0a10 keepalived with TTL(10)
-lease 694d81a1c98f0a10 keepalived with TTL(10)
-...
-```
-
-只要 keep-alive 在运行，Lease 就不会过期。
+示意：
+- compare：某个 key 的 mod_revision 是否等于期望
+- then：写入/删除
+- else：返回当前值
 
 ---
 
-## 五、高可用集群部署
+## 5. Lease 与 KeepAlive：服务注册、心跳与自动清理
 
-### 5.1 为什么需要集群？
+Lease 是 etcd 的“租约”，用来给 key 附加 TTL。
+典型用法是服务发现：
+- 服务启动：写入 `/services/xxx/instance-id` 并绑定 lease
+- 服务存活：周期 keep-alive
+- 服务异常退出：无法续约，lease 到期，key 自动删除
 
-单节点 etcd 有单点故障风险。生产环境必须部署集群。
+关键点：
+- lease 过期删除是 etcd 的机制保证，不依赖业务程序主动清理
+- keep-alive 如果抖动，可能导致实例被误删（需要合理 TTL/续约间隔）
 
-**集群节点数选择**：
+---
 
-| 节点数 | 容忍故障数 | 适用场景 |
-|--------|-----------|---------|
-| 1 | 0 | 开发测试 |
-| 3 | 1 | 小规模生产 |
-| 5 | 2 | 大规模生产 |
-| 7 | 3 | 超大规模（不推荐，性能下降） |
+## 6. Watch：K8s 的事件驱动内核（以及 watch 断了怎么办）
 
-### 5.2 本地三节点集群
+### 6.1 watch 为什么重要
 
-**生成 TLS 证书**（生产环境必须）：
+K8s 的 Controller 不是“轮询数据库”，而是：
+- list 一次拿到当前全量
+- watch 从某个 resourceVersion（本质上对应 etcd revision）开始收增量
 
-```bash
-# 安装 cfssl
-apt install golang-cfssl
+这样才能做到高效、实时的状态收敛。
 
-# 生成证书（简化版，生产环境请参考官方文档）
-mkdir -p /tmp/etcd-certs
-cd /tmp/etcd-certs
+### 6.2 watch 的三条硬边界
 
-# 生成 CA
-cat > ca-config.json <<EOF
-{
-  "signing": {
-    "default": {
-      "expiry": "87600h"
-    },
-    "profiles": {
-      "etcd": {
-        "usages": ["signing", "key encipherment", "server auth", "client auth"],
-        "expiry": "87600h"
-      }
-    }
-  }
-}
-EOF
+- **边界 1：watch 不是 MQ**
+  watch 依赖 etcd 的历史版本保留。一旦历史被 compact，旧 revision 的 watch 会报错。
 
-cat > ca-csr.json <<EOF
-{
-  "CN": "etcd-ca",
-  "key": {
-    "algo": "rsa",
-    "size": 2048
-  }
-}
-EOF
+- **边界 2：compaction 会让旧 watch 断流**
+  当你从一个很旧的 revision 开始 watch，会收到类似：
+  `etcdserver: mvcc: required revision has been compacted`
 
-cfssl gencert -initca ca-csr.json | cfssljson -bare ca
-```
+- **边界 3：client 必须实现“list + watch 续接”**
+  正确模式：
+  1) list 获取全量并记录最新 revision
+  2) watch 从该 revision 开始
+  3) watch 断开/报 compacted：回到 1
 
-**启动三节点集群**：
+### 6.3 etcdctl watch 示例
 
 ```bash
-# 节点 1
-etcd --name infra0 \
-  --listen-peer-urls http://127.0.0.1:2380 \
-  --listen-client-urls http://127.0.0.1:2379 \
-  --advertise-client-urls http://127.0.0.1:2379 \
-  --initial-advertise-peer-urls http://127.0.0.1:2380 \
-  --initial-cluster infra0=http://127.0.0.1:2380,infra1=http://127.0.0.1:2381,infra2=http://127.0.0.1:2382 \
-  --initial-cluster-token etcd-cluster-1 \
-  --initial-cluster-state new &
-
-# 节点 2
-etcd --name infra1 \
-  --listen-peer-urls http://127.0.0.1:2381 \
-  --listen-client-urls http://127.0.0.1:2479 \
-  --advertise-client-urls http://127.0.0.1:2479 \
-  --initial-advertise-peer-urls http://127.0.0.1:2381 \
-  --initial-cluster infra0=http://127.0.0.1:2380,infra1=http://127.0.0.1:2381,infra2=http://127.0.0.1:2382 \
-  --initial-cluster-token etcd-cluster-1 \
-  --initial-cluster-state new &
-
-# 节点 3
-etcd --name infra2 \
-  --listen-peer-urls http://127.0.0.1:2382 \
-  --listen-client-urls http://127.0.0.1:2579 \
-  --advertise-client-urls http://127.0.0.1:2579 \
-  --initial-advertise-peer-urls http://127.0.0.1:2382 \
-  --initial-cluster infra0=http://127.0.0.1:2380,infra1=http://127.0.0.1:2381,infra2=http://127.0.0.1:2382 \
-  --initial-cluster-token etcd-cluster-1 \
-  --initial-cluster-state new &
-```
-
-**验证集群**：
-
-```bash
-etcdctl --endpoints=http://127.0.0.1:2379 member list -w table
-```
-
-**实验输出**：
-```
-+------------------+---------+--------+------------------------+------------------------+
-|        ID        | STATUS  |  NAME  |       PEER ADDRS       |      CLIENT ADDRS      |
-+------------------+---------+--------+------------------------+------------------------+
-| 8e9e05c52164694d | started | infra0 | http://127.0.0.1:2380  | http://127.0.0.1:2379  |
-| 91bc3c398fb3c146 | started | infra1 | http://127.0.0.1:2381  | http://127.0.0.1:2479  |
-| fd422379fda50e48 | started | infra2 | http://127.0.0.1:2382  | http://127.0.0.1:2579  |
-+------------------+---------+--------+------------------------+------------------------+
+# 监听某个前缀
+ETCDCTL_API=3 etcdctl watch --prefix /config/
 ```
 
 ---
 
-## 六、备份恢复实战
+## 7. 存储引擎：WAL / Snapshot / Backend（BoltDB）与空间回收
 
-### 6.1 为什么要备份？
+这一节是很多“入门文章”缺失的关键：**你理解了这一层，才知道 compact/defrag 为什么必须、为什么顺序不能反**。
 
-即使 etcd 集群是高可用的，也可能遇到：
-- 误操作删除数据
-- 软件 bug 导致数据损坏
-- 整个集群故障（机房断电、网络分区）
-- 需要迁移到新集群
+### 7.1 三个核心部件
 
-**备份是最后的保险**。
+- **WAL（Write-Ahead Log）**
+  Raft 日志落盘位置。写入路径上要 fsync，性能强依赖磁盘。
 
-### 6.2 创建备份
+- **Snapshot（快照）**
+  用于加速节点重启/追赶，避免重放无限长日志。
 
-```bash
-# 创建快照
-etcdctl snapshot save /backup/etcd-$(date +%Y%m%d-%H%M%S).db
+- **Backend（BoltDB）**
+  etcd 的 MVCC 数据最终落在 backend（BoltDB）。
 
-# 查看快照信息
-etcdctl snapshot status /backup/etcd-*.db -w table
-```
+你可以把它理解为：
+- WAL 负责“复制一致性与恢复”
+- Backend 负责“当前状态与历史版本”
 
-**实验输出**：
-```
-+----------+----------+------------+------------+
-|   HASH   | REVISION | TOTAL KEYS | TOTAL SIZE |
-+----------+----------+------------+------------+
-| 3c3e8a7f |      100 |         50 |      25 kB |
-+----------+----------+------------+------------+
-```
+### 7.2 为什么删除数据后空间不会马上下降
 
-**带 TLS 的备份**（生产环境）：
+BoltDB 的空间回收不是“实时”的：
+- 你删除 key 只是产生新版本（tombstone），旧页可能仍占用空间
+- 需要通过 **compaction** 丢弃旧版本
+- 再通过 **defrag** 把 backend 文件重写/整理，才能真正释放空间
 
-```bash
-etcdctl --endpoints https://127.0.0.1:2379 \
-  --cert /etc/kubernetes/pki/etcd/server.crt \
-  --key /etc/kubernetes/pki/etcd/server.key \
-  --cacert /etc/kubernetes/pki/etcd/ca.crt \
-  snapshot save /backup/etcd-snapshot.db
-```
+### 7.3 关键顺序：先 compact 再 defrag
 
+- compact：告诉 etcd 丢弃某 revision 之前的历史版本
+- defrag：对 backend 做物理整理，释放空间
 
-### 6.3 完整的备份恢复流程
-
-**步骤 1：准备测试数据**
-
-```bash
-# 写入测试数据
-etcdctl put /app/config/db_host "192.168.1.100"
-etcdctl put /app/config/db_port "3306"
-etcdctl put /app/users/user1 "Alice"
-etcdctl put /app/users/user2 "Bob"
-
-# 验证数据
-etcdctl get --prefix /app/
-```
-
-**步骤 2：创建备份**
-
-```bash
-mkdir -p /tmp/etcd-backup
-etcdctl snapshot save /tmp/etcd-backup/snapshot.db
-etcdctl snapshot status /tmp/etcd-backup/snapshot.db -w table
-```
-
-**步骤 3：模拟灾难**
-
-```bash
-# 删除所有数据
-etcdctl del --prefix /app/
-
-# 验证数据已删除
-etcdctl get --prefix /app/
-# （空）
-```
-
-**步骤 4：恢复数据**
-
-```bash
-# 停止 etcd
-# 删除旧数据目录
-rm -rf /tmp/etcd/default.etcd
-
-# 从快照恢复
-etcdctl snapshot restore /tmp/etcd-backup/snapshot.db \
-  --data-dir=/tmp/etcd/restored
-
-# 使用恢复的数据目录启动 etcd
-etcd --data-dir=/tmp/etcd/restored &
-
-# 验证数据
-etcdctl get --prefix /app/
-```
-
-**实验输出**：
-```
-/app/config/db_host
-192.168.1.100
-/app/config/db_port
-3306
-/app/users/user1
-Alice
-/app/users/user2
-Bob
-```
-
-数据恢复成功！
-
-### 6.4 集群恢复
-
-对于多节点集群，每个节点都要恢复：
-
-```bash
-# 节点 1
-etcdctl snapshot restore /tmp/etcd-backup/snapshot.db \
-  --name infra0 \
-  --data-dir=/tmp/etcd/infra0 \
-  --initial-cluster infra0=http://127.0.0.1:2380,infra1=http://127.0.0.1:2381,infra2=http://127.0.0.1:2382 \
-  --initial-cluster-token etcd-cluster-1 \
-  --initial-advertise-peer-urls http://127.0.0.1:2380
-
-# 节点 2
-etcdctl snapshot restore /tmp/etcd-backup/snapshot.db \
-  --name infra1 \
-  --data-dir=/tmp/etcd/infra1 \
-  --initial-cluster infra0=http://127.0.0.1:2380,infra1=http://127.0.0.1:2381,infra2=http://127.0.0.1:2382 \
-  --initial-cluster-token etcd-cluster-1 \
-  --initial-advertise-peer-urls http://127.0.0.1:2381
-
-# 节点 3
-etcdctl snapshot restore /tmp/etcd-backup/snapshot.db \
-  --name infra2 \
-  --data-dir=/tmp/etcd/infra2 \
-  --initial-cluster infra0=http://127.0.0.1:2380,infra1=http://127.0.0.1:2381,infra2=http://127.0.0.1:2382 \
-  --initial-cluster-token etcd-cluster-1 \
-  --initial-advertise-peer-urls http://127.0.0.1:2382
-```
-
-然后启动所有节点。
+如果只 defrag 不 compact：
+- 旧版本仍存在，空间不会明显下降
 
 ---
 
-## 七、运维最佳实践
+## 8. 集群部署：节点数、网络、磁盘、TLS 与常见坑
 
-### 7.1 存储配额管理
+### 8.1 节点数选择
 
-etcd 默认存储配额是 2GB，超过后会拒绝写入。
+- 3 节点是生产的基线（容忍 1 故障）
+- 5 节点用于更强容灾（容忍 2 故障），但写延迟和资源成本更高
 
-**实验：写爆磁盘**
+### 8.2 磁盘与网络
 
-```bash
-# 启动一个小配额的 etcd（16MB）
-etcd --quota-backend-bytes=$((16*1024*1024)) &
+- 优先 SSD（WAL fsync 很敏感）
+- 避免与高 IO 业务共盘
+- 保证节点间网络稳定、延迟低
 
-# 持续写入直到超过配额
-while [ 1 ]; do
-  dd if=/dev/urandom bs=1024 count=1024 2>/dev/null | etcdctl put key || break
-done
-```
+### 8.3 TLS：生产环境默认必须启用
 
-**实验输出**：
-```
-Error: etcdserver: mvcc: database space exceeded
-```
+生产连接 etcd 一般是 HTTPS + 双向 TLS。
 
-**查看告警**：
+**注意**：不同集群（kubeadm/发行版）证书文件名称与用途不同。
+- server cert 不一定适合作为 client cert
+- kubeadm 常见有 `healthcheck-client.crt` 等 client 用证书
 
-```bash
-etcdctl alarm list
-```
-
-**实验输出**：
-```
-memberID:8e9e05c52164694d alarm:NOSPACE
-```
-
-**解决空间不足**：
-
-```bash
-# 1. 获取当前 revision
-rev=$(etcdctl endpoint status --write-out="json" | jq '.[0].Status.header.revision')
-
-# 2. 压缩历史版本
-etcdctl compact $rev
-
-# 3. 碎片整理
-etcdctl defrag
-
-# 4. 清除告警
-etcdctl alarm disarm
-
-# 5. 验证
-etcdctl endpoint status -w table
-etcdctl alarm list
-```
-
-### 7.2 碎片整理（Defrag）
-
-etcd 删除数据后，磁盘空间不会立即释放，需要碎片整理。
-
-```bash
-# 写入大量数据
-for i in $(seq 1 1000); do
-  etcdctl put /test/key$i "value$i"
-done
-
-# 查看数据库大小
-etcdctl endpoint status -w table
-
-# 删除数据
-etcdctl del --prefix /test/
-
-# 再次查看（大小没变）
-etcdctl endpoint status -w table
-
-# 碎片整理
-etcdctl defrag
-
-# 再次查看（大小减小了）
-etcdctl endpoint status -w table
-```
-
-### 7.3 自动压缩
-
-```bash
-# 启动时配置自动压缩（保留 1 小时历史）
-etcd --auto-compaction-retention=1h
-
-# 或者保留最近 1000 个 revision
-etcd --auto-compaction-retention=1000 --auto-compaction-mode=revision
-```
-
-### 7.4 监控指标
-
-| 指标 | 说明 | 告警阈值 |
-|------|------|---------|
-| etcd_server_has_leader | 是否有 Leader | = 0 告警 |
-| etcd_server_leader_changes_seen_total | Leader 切换次数 | 频繁切换告警 |
-| etcd_disk_wal_fsync_duration_seconds | WAL 同步延迟 | > 100ms 告警 |
-| etcd_mvcc_db_total_size_in_bytes | 数据库大小 | > 80% 配额告警 |
-
-```bash
-# 查看端点状态
-etcdctl endpoint status -w table
-
-# 查看健康状态
-etcdctl endpoint health
-
-# 查看 metrics
-curl http://127.0.0.1:2379/metrics
-```
+本文后面会给出“如何在 K8s 中安全连接 etcd”的建议写法。
 
 ---
 
-## 八、K8s 中的 etcd 操作
+## 9. 备份与恢复：正确的快照、恢复与灾备演练
 
-### 8.1 连接 K8s etcd
+### 9.1 快照备份（最重要的一条）
 
-```bash
-# 进入 etcd Pod
-kubectl exec -it etcd-<node-name> -n kube-system -- sh
-
-# 设置别名
-alias ectl='etcdctl --endpoints https://127.0.0.1:2379 \
-  --cacert /etc/kubernetes/pki/etcd/ca.crt \
-  --cert /etc/kubernetes/pki/etcd/server.crt \
-  --key /etc/kubernetes/pki/etcd/server.key'
-
-# 测试连接
-ectl member list
-```
-
-### 8.2 探索 K8s 数据结构
+etcd 的权威备份方式是：
 
 ```bash
-# 查看所有 key
-ectl get --prefix --keys-only /registry/
+ETCDCTL_API=3 etcdctl snapshot save snapshot.db
+ETCDCTL_API=3 etcdctl snapshot status snapshot.db -w table
 ```
 
-**K8s 数据存储结构**：
+生产环境通常还需要带 TLS 参数。
 
-```
-/registry/
-├── pods/
-│   ├── default/
-│   └── kube-system/
-├── deployments/
-├── services/
-│   ├── endpoints/
-│   └── specs/
-├── configmaps/
-├── secrets/
-├── namespaces/
-└── ...
-```
+### 9.2 恢复的工程要点
 
-### 8.3 查看具体资源
+- 恢复本质是“用快照重建数据目录”，通常需要停服
+- 多节点恢复需要正确指定 name/initial-cluster 等参数
+- 做灾备演练时，一定要验证：
+  - 集群可用
+  - revision 推进正常
+  - client/watch 行为正常
+
+---
+
+## 10. 生产运维：告警、compact/defrag、关键参数与排障套路
+
+### 10.1 NOSPACE 告警与处理
+
+当 backend 达到配额，写入会失败：
+
+- 现象：`mvcc: database space exceeded`
+- 告警：`NOSPACE`
+
+处理步骤（正确顺序）：
+
+1) 获取当前 revision
+2) compact 到该 revision（或略小一点的 revision）
+3) defrag
+4) alarm disarm
+
+### 10.2 自动压缩（auto-compaction）
+
+生产建议开启自动压缩，避免历史无限增长。
 
 ```bash
-# 查看 kube-dns Service
-ectl get /registry/services/specs/kube-system/kube-dns
+# 保留 1 小时历史
+--auto-compaction-retention=1h
 
-# 查看所有 Pod
-ectl get --prefix --keys-only /registry/pods/
+# 或按 revision 保留最近 N 个版本
+--auto-compaction-mode=revision
+--auto-compaction-retention=1000
 ```
 
-### 8.4 K8s etcd 备份脚本
+### 10.3 关键参数清单（只列工程上常讨论的）
+
+| 参数 | 作用 | 工程含义 |
+|---|---|---|
+| --quota-backend-bytes | backend 配额 | 防止无限增长把盘打爆 |
+| --auto-compaction-* | 自动压缩 | 控制历史版本保留 |
+| --snapshot-count | 触发 snapshot 的写入次数 | 控制日志长度与恢复速度 |
+| --heartbeat-interval / --election-timeout | Raft 心跳与选举 | 网络抖动时尤其敏感 |
+
+### 10.4 排障套路（建议你背下来）
+
+- member 是否齐全：`member list`
+- endpoint 是否健康：`endpoint health`
+- leader 是否频繁切换：看 metrics
+- 写入是否被配额阻断：`alarm list`
+- 盘 IO 是否抖动：关注 wal fsync 延迟
+
+---
+
+## 11. Kubernetes 场景：如何安全地接触 K8s etcd
+
+### 11.1 不要“直接改 /registry”
+
+你可以读、可以备份，但不要直接删除/写 /registry 下的 key。
+K8s 状态机与缓存层（apiserver/controller）会因此产生不可预期的问题。
+
+### 11.2 kubeadm 集群里如何进入 etcd
 
 ```bash
-#!/bin/bash
-# k8s-etcd-backup.sh
+kubectl -n kube-system exec -it etcd-<node-name> -- sh
+```
 
-BACKUP_DIR="/backup/etcd"
-BACKUP_FILE="$BACKUP_DIR/k8s-etcd-$(date +%Y%m%d-%H%M%S).db"
-RETENTION_DAYS=7
+然后通常可以用容器内的证书连接本机 etcd。
+**证书路径与用途以你集群实际为准**。
 
-mkdir -p $BACKUP_DIR
+示例（仅示意，证书文件名需要按实际调整）：
 
-ETCDCTL_API=3 etcdctl \
+```bash
+export ETCDCTL_API=3
+etcdctl \
   --endpoints=https://127.0.0.1:2379 \
   --cacert=/etc/kubernetes/pki/etcd/ca.crt \
-  --cert=/etc/kubernetes/pki/etcd/server.crt \
-  --key=/etc/kubernetes/pki/etcd/server.key \
-  snapshot save $BACKUP_FILE
-
-etcdctl snapshot status $BACKUP_FILE -w table
-
-# 删除旧备份
-find $BACKUP_DIR -name "k8s-etcd-*.db" -mtime +$RETENTION_DAYS -delete
-
-echo "Backup completed: $BACKUP_FILE"
-```
-
-添加到 crontab：
-
-```bash
-# 每天凌晨 2 点备份
-0 2 * * * /usr/local/bin/k8s-etcd-backup.sh >> /var/log/etcd-backup.log 2>&1
-```
-
-### 8.5 安全注意事项
-
-1. **不要直接修改 etcd 数据**：可能导致 K8s 状态不一致
-2. **谨慎使用 delete**：删除数据可能导致集群故障
-3. **定期备份**：etcd 数据是 K8s 的命脉
-4. **限制访问**：etcd 应该只允许 API Server 访问
-
-```bash
-# ⚠️ 危险操作，仅用于学习，不要在生产环境执行！
-ectl del --prefix /registry/pods/default/
+  --cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt \
+  --key=/etc/kubernetes/pki/etcd/healthcheck-client.key \
+  endpoint health
 ```
 
 ---
 
-## 九、常用命令速查
+## 12. 命令速查（只保留高频且不误导的）
 
-### 基本操作
+### 12.1 基础 KV
 
 ```bash
-etcdctl put <key> <value>              # 写入
-etcdctl get <key>                      # 读取
-etcdctl get --prefix <prefix>          # 前缀查询
-etcdctl del <key>                      # 删除
-etcdctl watch <key>                    # 监听
-etcdctl watch --prefix <prefix>        # 前缀监听
+ETCDCTL_API=3 etcdctl put <key> <value>
+ETCDCTL_API=3 etcdctl get <key>
+ETCDCTL_API=3 etcdctl get --prefix <prefix>
+ETCDCTL_API=3 etcdctl del <key>
+ETCDCTL_API=3 etcdctl del --prefix <prefix>
 ```
 
-### 版本查询
+### 12.2 watch
 
 ```bash
-etcdctl get <key> --rev=<revision>     # 查询历史版本
-etcdctl get <key> -w=json              # JSON 格式输出
+ETCDCTL_API=3 etcdctl watch <key>
+ETCDCTL_API=3 etcdctl watch --prefix <prefix>
 ```
 
-### Lease 操作
+### 12.3 集群健康与成员
 
 ```bash
-etcdctl lease grant <ttl>              # 创建租约
-etcdctl lease list                     # 列出租约
-etcdctl lease timetolive <lease_id>    # 查看租约详情
-etcdctl lease keep-alive <lease_id>    # 续约
-etcdctl lease revoke <lease_id>        # 撤销租约
-etcdctl put <key> --lease=<lease_id>   # 绑定租约
+ETCDCTL_API=3 etcdctl endpoint health
+ETCDCTL_API=3 etcdctl endpoint status -w table
+ETCDCTL_API=3 etcdctl member list -w table
 ```
 
-### 集群管理
+### 12.4 压缩与碎片整理
 
 ```bash
-etcdctl member list                    # 列出成员
-etcdctl endpoint status                # 端点状态
-etcdctl endpoint health                # 健康检查
+# 获取 revision（示例：需要 jq）
+rev=$(ETCDCTL_API=3 etcdctl endpoint status -w json | jq '.[0].Status.header.revision')
+
+ETCDCTL_API=3 etcdctl compact $rev
+ETCDCTL_API=3 etcdctl defrag
+ETCDCTL_API=3 etcdctl alarm list
+ETCDCTL_API=3 etcdctl alarm disarm
 ```
 
-### 备份恢复
+### 12.5 备份恢复
 
 ```bash
-etcdctl snapshot save <file>           # 创建快照
-etcdctl snapshot status <file>         # 查看快照
-etcdctl snapshot restore <file>        # 恢复快照
-```
-
-### 运维操作
-
-```bash
-etcdctl compact <revision>             # 压缩历史
-etcdctl defrag                         # 碎片整理
-etcdctl alarm list                     # 查看告警
-etcdctl alarm disarm                   # 清除告警
+ETCDCTL_API=3 etcdctl snapshot save snapshot.db
+ETCDCTL_API=3 etcdctl snapshot status snapshot.db -w table
+ETCDCTL_API=3 etcdctl snapshot restore snapshot.db --data-dir=/path/to/dir
 ```
 
 ---
 
-## 十、总结
+## 总结：你真正需要掌握的 10 句话
 
-### 核心知识回顾
-
-| 主题 | 核心内容 |
-|------|---------|
-| **原理** | Raft 共识、MVCC、Lease、Watch |
-| **基础操作** | put/get/del/watch |
-| **数据模型** | revision、version、历史查询 |
-| **集群部署** | 3/5 节点、TLS 证书 |
-| **备份恢复** | snapshot save/restore |
-| **运维** | 压缩、碎片整理、告警 |
-| **K8s** | /registry/ 数据结构 |
-
-### 最佳实践
-
-1. **生产环境必须部署集群**：至少 3 节点
-2. **定期备份**：每天至少一次，异地存储
-3. **监控告警**：关注 Leader 状态、磁盘空间、延迟
-4. **定期压缩**：配置自动压缩，定期碎片整理
-5. **使用 SSD**：etcd 对磁盘 I/O 敏感
-6. **不要直接操作 K8s etcd**：通过 kubectl 操作
-
-### 学习路径
-
-```
-[基础操作] → [数据模型] → [集群部署] → [备份恢复] → [运维实践] → [K8s etcd]
-```
+1. etcd 是一致性存储，不是缓存。
+2. 写请求一定走 leader，多数派提交才算成功。
+3. 读有两种语义：线性一致读更慢但更“真实”。
+4. revision 是全局提交号，watch/list 本质围绕它运转。
+5. watch 会因为 compaction 断流，必须实现 list+watch 续接。
+6. WAL/snapshot/backend 三件套决定了性能、恢复与空间占用。
+7. 空间回收必须 compact 后 defrag。
+8. 3 节点是生产基线，SSD 与网络稳定性比“多给 CPU”更重要。
+9. snapshot 是权威备份方式，恢复要演练。
+10. 在 K8s 里不要直接改 /registry，只做备份与诊断。
 
 ---
 
 **版本信息**：
-- 文档版本：v1.0
+- 文档版本：v2.0（深度重构）
 - 创建日期：2026-01-16
-- etcd 版本：3.5.x
-- 适用对象：K8s 运维人员、想深入理解 K8s 存储层的开发者
+- 更新日期：2026-01-18
+- 适用对象：偏工程/偏生产（B）
 
 ---
 
 ## 参考资料
 
-- [etcd 官方文档](https://etcd.io/docs/v3.5/)
-- [How etcd works with and without Kubernetes](https://learnk8s.io/etcd-kubernetes)
-- 极客时间云原生训练营 - 模块 5
-
----
-
-> 💡 **建议**：理论看完后，一定要动手做实验！可以参考 `scripts/` 目录下的实验脚本。
+- etcd 官方文档：https://etcd.io/docs/
+- Raft 可视化与论文解读
+- Kubernetes 文档：API Server 存储与一致性

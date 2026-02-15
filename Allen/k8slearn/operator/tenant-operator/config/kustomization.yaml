@@ -1,0 +1,7 @@
+resources:
+- manager/namespace.yaml
+- rbac/service_account.yaml
+- rbac/role.yaml
+- rbac/role_binding.yaml
+- manager/deployment.yaml
+- crd/tenant.cncamp.io_tenants.yaml

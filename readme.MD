@@ -37,3 +37,32 @@
 
 182.42.95.71    10.0.0.32(内)
 
+
+
+# k8s级群信息
+
+## master
+ssh root@182.42.82.135
+    内网：10.0.3.231
+
+## work node
+ssh root@182.42.80.121
+    内网：10.0.1.149
+
+ssh root@182.42.95.71
+    内网：10.0.0.32
+密码都是 1Qaz2Wsx
+
+
+# 资源
+所有的资源都是从阿里云镜像源进行下载
+
+# 获取资源时 用命令返回模式 
+## 例如：
+
+```
+sshpass -p '1Qaz2Wsx' ssh -o StrictHostKeyChecking=no root@182.42.82.135 'KUBECONFIG=/etc/kubernetes/admin.conf kubectl get pods -n kube-system -l k8s-app=calico-kube-controllers -o wide' 
+```
+
+# 文件修改 
+- 先修改本地的文件，然后再上传到服务器

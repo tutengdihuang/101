@@ -1,0 +1,6 @@
+apiVersion: v2
+name: service-test
+description: Converted from Allen/k8slearn/k8s_test (web/user/product/trade + etcd)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

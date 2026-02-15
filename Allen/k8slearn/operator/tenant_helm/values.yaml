@@ -1,0 +1,52 @@
+# Operator 镜像配置
+image:
+  repository: crpi-j9gshcbjtb1i6c7h.cn-hangzhou.personal.cr.aliyuncs.com/tutengdihuang_docker_image/tenant-operator
+  tag: latest
+  pullPolicy: Always
+
+# 镜像拉取密钥
+imagePullSecrets:
+  - name: aliyun-cr
+
+# Operator 副本数
+replicaCount: 1
+
+# 资源限制
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# 是否安装 CRD
+installCRD: true
+
+# 是否创建示例 Tenant
+createExampleTenant: false
+
+# 示例 Tenant 配置
+tenant:
+  name: demo-tenant
+  spec:
+    namespace: demo
+    adminUser: admin
+    objectCounts:
+      configMaps: "10"
+      secrets: "10"
+      services: "5"
+    podQuota:
+      pods: "10"
+
+# Operator 部署命名空间
+operatorNamespace: tenant-operator-system
+
+# 健康检查配置
+healthProbeBindAddress: :8081
+metricsBindAddress: :8080
+
+# ServiceAccount 配置
+serviceAccount:
+  create: true
+  name: ""
